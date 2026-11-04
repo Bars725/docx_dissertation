@@ -202,10 +202,16 @@ class TextPanel(_Panel):
             messagebox.showinfo(APP_TITLE, "Приложений пока нет. Добавьте их: тип блока «Приложение».",
                                 parent=self.root)
             return
+        from .dialogs import APPENDIX_FORMS
+
         dlg = RefDialog(self.root, "Ссылка на приложение",
-                        "В текст вставится буква приложения: «см. приложение {@P1}» → «см. приложение А».\n"
-                        "При перестановке приложений буква обновится.",
-                        [(f"Приложение {e.letter}. {e.title}", "{@" + e.key + "}") for e in entries])
+                        "В текст вставится слово и буква приложения, например «в приложении А».\n"
+                        "Буква — поле: при перестановке приложений она обновится.",
+                        [(f"Приложение {e.letter}. {e.title}", "{@" + e.key + "}") for e in entries],
+                        forms=APPENDIX_FORMS, form_index=self.ctl.settings.data.get("ref_form_appendix", 0))
+        if dlg.result:
+            self.ctl.settings.data["ref_form_appendix"] = dlg.form_index
+            self.ctl.settings.save()
         self._insert_token(dlg.result)
 
     def _insert_token(self, token, own_line: bool = False) -> None:
@@ -225,10 +231,17 @@ class TextPanel(_Panel):
             messagebox.showinfo(APP_TITLE, "Рисунков в документе пока нет — сначала «Добавить "
                                 "изображение…» и сохраните текст.", parent=self.root)
             return
+        from .dialogs import FIGURE_FORMS
+
         dlg = RefDialog(self.root, "Ссылка на рисунок",
-                        "В текст вставится номер рисунка: «на рисунке {@F1}» → «на рисунке 1».\n"
-                        "При добавлении и перестановке рисунков номер обновится.",
-                        [(f"Рисунок {e.number} – {e.title}", "{@" + e.key + "}") for e in entries])
+                        "По ГОСТ 7.32 слово пишется полностью: «в соответствии с рисунком 2», "
+                        "«на рисунке 1».\nНомер — поле: при добавлении и перестановке рисунков "
+                        "он обновится.",
+                        [(f"Рисунок {e.number} – {e.title}", "{@" + e.key + "}") for e in entries],
+                        forms=FIGURE_FORMS, form_index=self.ctl.settings.data.get("ref_form_figure", 0))
+        if dlg.result:
+            self.ctl.settings.data["ref_form_figure"] = dlg.form_index
+            self.ctl.settings.save()
         self._insert_token(dlg.result)
 
     @guarded

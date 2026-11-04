@@ -265,14 +265,26 @@ def test_gui_scenario(tk_env, tmp_path):
     assert "ПРИЛОЖЕНИЕ Б" in preview_text()
     ed.on_action()                                     # «Добавить приложение»
     assert [ap.tree.item(i, "values")[0] for i in ap.tree.get_children()] == ["А", "Б"]
+    dlg_ref = dialogs_mod = importlib.import_module("dissertation.gui.dialogs")
+    rd = dialogs_mod.RefDialog(root, "t", "h", [("Приложение Б", "{@P2}")],
+                               forms=dialogs_mod.APPENDIX_FORMS, form_index=0)
+    rd.listbox.selection_set(0)
+    rd._ok()
+    assert rd.result == "приложении {@P2}"
+    del dlg_ref
     select(B.BODY)
-    tp.text.insert("end", "Код — в приложении {@P2}.")
+    tp.text.insert("end", "Код — в " + rd.result + ".")
     assert "в приложении Б" in preview_text()
     ed.on_action()
     select(B.APPENDIX)
     ap.on_sort()
     assert ap.tree.item(ap.tree.get_children()[0], "values")[2] == "Листинг программы"
     assert "Код — в приложении А." in [p.text for p in ctl.builder.document.paragraphs]
+    rf = dialogs_mod.RefDialog(root, "t", "h", [("Рисунок 1", "{@F1}")],
+                               forms=dialogs_mod.FIGURE_FORMS, form_index=1)
+    rf.listbox.selection_set(0)
+    rf._ok()
+    assert rf.result == "рисунком {@F1}"
 
     # --- «Добавить изображение…»: папка, подпись закрепляется за файлом, маркер в тексте
     from PIL import Image

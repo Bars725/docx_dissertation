@@ -52,6 +52,33 @@ class AppController:
             profile.save(saved)
         return profile, saved
 
+    # ------------------------------------------- профили для ручной правки
+    def _free_path(self, stem: str) -> Path:
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^\w\-]+", "_", stem, flags=re.U).strip("_") or "profile"
+        path, i = self.profiles_dir / f"{slug}.json", 2
+        while path.exists():
+            path, i = self.profiles_dir / f"{slug}_{i}.json", i + 1
+        return path
+
+    def export_preset(self, key: str) -> Path:
+        """Встроенный пресет → JSON в папке профилей (появится в «Создание документа»)."""
+        prof = PRESETS[key]()
+        prof.name = f"{prof.name} (моя правка)"
+        prof.source = "edited"
+        path = self._free_path(key)
+        prof.save(path)
+        return path
+
+    def export_current_profile(self) -> Path:
+        prof = self._require().profile.copy()
+        stem = self.path.stem if self.path else "document"
+        prof.name = f"Профиль документа {stem}"
+        prof.source = "edited"
+        path = self._free_path(f"doc_{stem}")
+        prof.save(path)
+        return path
+
     # ============================================================ документ
     def new_document(self, profile_key: str | None = None) -> DocumentBuilder:
         self.builder = DocumentBuilder.new(self.get_profile(profile_key))

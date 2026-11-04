@@ -186,12 +186,20 @@ class BooleanVar(Variable):
     _default = False
 
 
+class IntVar(Variable):
+    _default = 0
+
+
 # ------------------------------------------------------------------ ttk
 class Frame(_Widget):
     pass
 
 
 class Label(_Widget):
+    pass
+
+
+class LabelFrame(_Widget):
     pass
 
 
@@ -307,13 +315,13 @@ def build_modules():
     """(tkinter, ttk, filedialog, messagebox) — модули-заглушки."""
     tk = types.ModuleType("tkinter")
     for name in ("Tk", "Toplevel", "Menu", "Canvas", "Listbox", "Text", "StringVar", "BooleanVar",
-                 "PhotoImage"):
+                 "PhotoImage", "IntVar"):
         setattr(tk, name, globals()[name])
     tk.TclError = TclError
     tk.Misc = _Widget
     ttk = types.ModuleType("tkinter.ttk")
     for name in ("Frame", "Label", "Button", "Entry", "Checkbutton", "Radiobutton", "Scrollbar",
-                 "PanedWindow", "Style", "Combobox", "Treeview"):
+                 "PanedWindow", "Style", "Combobox", "Treeview", "LabelFrame"):
         setattr(ttk, name, globals()[name])
     fd = types.ModuleType("tkinter.filedialog")
     fd.askopenfilename = lambda **k: ""

@@ -63,6 +63,14 @@ class App:
         f.add_command(label="Открыть в Word", command=self.on_open_in_word)
         f.add_separator()
         f.add_command(label="Загрузить образец оформления…", command=self.on_load_template)
+        prof = tk.Menu(f, tearoff=False)
+        prof.add_command(label="Открыть папку профилей", command=self.on_open_profiles)
+        prof.add_command(label="Сохранить ГОСТ 7.32-2017 как профиль для правки",
+                         command=lambda: self.on_export_preset("gost-7.32-2017"))
+        prof.add_command(label="Сохранить ГОСТ Р 7.0.11-2011 как профиль для правки",
+                         command=lambda: self.on_export_preset("gost-r-7.0.11-2011"))
+        prof.add_command(label="Сохранить профиль текущего документа", command=self.on_export_current)
+        f.add_cascade(label="Профили оформления", menu=prof)
         f.add_command(label="Главное меню", command=self.show_main_menu)
         f.add_separator()
         f.add_command(label="Выход", command=self.on_exit)
@@ -217,6 +225,33 @@ class App:
         if p.extraction_report:
             lines += ["", "Извлечено из образца:"] + p.extraction_report
         ReportDialog(self.root, "Профиль оформления", "\n".join(lines))
+
+    @guarded
+    def on_open_profiles(self) -> None:
+        self.ctl.profiles_dir.mkdir(parents=True, exist_ok=True)
+        open_externally(self.ctl.profiles_dir)
+
+    @guarded
+    def on_export_preset(self, key: str) -> None:
+        path = self.ctl.export_preset(key)
+        self._profile_saved(path)
+
+    @guarded
+    def on_export_current(self) -> None:
+        if self.ctl.builder is None:
+            messagebox.showinfo(APP_TITLE, "Сначала откройте или создайте документ", parent=self.root)
+            return
+        self._profile_saved(self.ctl.export_current_profile())
+
+    def _profile_saved(self, path) -> None:
+        ReportDialog(self.root, "Профиль сохранён", (
+            f"Файл: {path}\n\n"
+            "Откройте его в Блокноте (кодировка UTF-8), измените нужные значения и сохраните.\n"
+            "Профиль появится в «Создание документа» и в «Выбор документа → Использовать профиль».\n"
+            "Чтобы применить к уже открытому документу: «Выбор документа» → «Использовать профиль» "
+            "→ «Привести стили и поля документа к профилю».\n\n"
+            "Описание всех полей — docs/PROFILES.md в папке программы."))
+        open_externally(path.parent)
 
     def on_exit(self) -> None:
         if self._confirm_discard():

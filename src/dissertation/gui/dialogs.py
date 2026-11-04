@@ -162,12 +162,28 @@ class CitationDialog(_Dialog):
         self.destroy()
 
 
-class RefDialog(_Dialog):
-    """Выбор цели ссылки; результат — токен (например «{@P1}» или «{@F2}»)."""
+# Формы ссылки (ГОСТ 7.32-2017 / ГОСТ Р 2.105: слово пишется полностью — «в соответствии
+# с рисунком 2»; квадратные скобки зарезервированы за ссылками на литературу).
+FIGURE_FORMS = [("на рисунке N", "рисунке {ref}"), ("с рисунком N (в соответствии с…)", "рисунком {ref}"),
+                ("см. рисунок N", "рисунок {ref}"), ("рисунка N", "рисунка {ref}"),
+                ("к рисунку N", "рисунку {ref}"), ("(рисунок N)", "(рисунок {ref})"),
+                ("(рис. N) — сокращение, если разрешает вуз", "(рис. {ref})")]
+APPENDIX_FORMS = [("в приложении А", "приложении {ref}"), ("см. приложение А", "приложение {ref}"),
+                  ("приложения А", "приложения {ref}"), ("(приложение А)", "(приложение {ref})")]
 
-    def __init__(self, master, title: str, hint: str, items: list[tuple[str, str]]):
+
+class RefDialog(_Dialog):
+    """Выбор цели ссылки и формы слова; результат — текст с токеном, например «рисунке {@F2}».
+
+    Слово вставляется обычным текстом, номер/буква — полем, которое обновляется само.
+    """
+
+    def __init__(self, master, title: str, hint: str, items: list[tuple[str, str]],
+                 forms: list[tuple[str, str]] | None = None, form_index: int = 0):
         super().__init__(master, title)
         self.items = items
+        self.forms = forms or []
+        self.form_index = form_index
         ttk.Label(self.body, text=hint, foreground="#555", justify="left").pack(anchor="w")
         self.listbox = tk.Listbox(self.body, height=10, width=80, activestyle="dotbox")
         self.listbox.pack(fill="both", expand=True, pady=6)
@@ -175,6 +191,14 @@ class RefDialog(_Dialog):
             self.listbox.insert("end", label)
         if items:
             self.listbox.selection_set(0)
+        if self.forms:
+            box = ttk.LabelFrame(self.body, text="Форма ссылки (слово склоняется по смыслу фразы)",
+                                 padding=6)
+            box.pack(fill="x", pady=(0, 6))
+            self.form_var = tk.IntVar(value=min(form_index, len(self.forms) - 1))
+            for i, (label, _) in enumerate(self.forms):
+                ttk.Radiobutton(box, text=label, value=i, variable=self.form_var).grid(
+                    row=i // 2, column=i % 2, sticky="w", padx=(0, 18))
         btns = ttk.Frame(self.body)
         btns.pack(fill="x")
         ttk.Button(btns, text="Отмена", command=self.destroy).pack(side="right")
@@ -184,9 +208,14 @@ class RefDialog(_Dialog):
 
     def _ok(self) -> None:
         sel = self.listbox.curselection()
-        if sel:
-            self.result = self.items[sel[0]][1]
-            self.destroy()
+        if not sel:
+            return
+        token = self.items[sel[0]][1]
+        if self.forms:
+            self.form_index = self.form_var.get()
+            token = self.forms[self.form_index][1].format(ref=token)
+        self.result = token
+        self.destroy()
 
 
 class ImageDialog(_Dialog):
