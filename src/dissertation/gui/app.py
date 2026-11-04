@@ -296,7 +296,7 @@ class EditorFrame(ttk.Frame):
                               "заменено оформлением по ГОСТ):", foreground="#555").pack(anchor="w", pady=(8, 2))
         text_frame = ttk.Frame(right)
         text_frame.pack(fill="both", expand=True)
-        self.text = tk.Text(text_frame, wrap="word", undo=True, font=("Consolas", 11),
+        self.text = tk.Text(text_frame, wrap="word", undo=True, font=("Consolas", 11), height=12,
                             relief="solid", borderwidth=1)
         tsb = ttk.Scrollbar(text_frame, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=tsb.set)
@@ -373,7 +373,7 @@ class EditorFrame(ttk.Frame):
         enabled = self._block() in BLOCKS_WITH_HEADING
         self.heading_entry.configure(state="normal" if enabled else "disabled")
 
-    def _options(self) -> CleanOptions:
+    def _clean_options(self) -> CleanOptions:
         mode = next(k for k, label in PARAGRAPH_MODES if label == self.mode_var.get())
         return CleanOptions(paragraph_mode=mode, typography=self.typo_var.get())
 
@@ -404,7 +404,7 @@ class EditorFrame(ttk.Frame):
     @guarded
     def on_preview(self) -> None:
         paras = self.ctl.preview(self._block(), self.text.get("1.0", "end-1c"),
-                                 clean=self.clean_var.get(), options=self._options())
+                                 clean=self.clean_var.get(), options=self._clean_options())
         body = "\n\n".join(f"¶{i}  {p}" for i, p in enumerate(paras, 1)) or "(пусто)"
         ReportDialog(self.root, f"Предпросмотр: {len(paras)} абз.", body)
 
@@ -412,7 +412,7 @@ class EditorFrame(ttk.Frame):
     def on_insert(self) -> None:
         res = self.ctl.insert(self._block(), text=self.text.get("1.0", "end-1c"),
                               heading=self.heading_var.get(), position=self._position(),
-                              clean=self.clean_var.get(), options=self._options())
+                              clean=self.clean_var.get(), options=self._clean_options())
         self.text.delete("1.0", "end")
         self.heading_var.set("")
         self.refresh_outline()
