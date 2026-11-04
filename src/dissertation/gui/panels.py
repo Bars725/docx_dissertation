@@ -76,6 +76,8 @@ class TextPanel(_Panel):
         ttk.Label(hint, text="Текст (Ctrl+V; исходное форматирование не сохраняется):",
                   foreground="#555").pack(side="left")
         ttk.Button(hint, text="Ссылка на источник…", command=self.on_cite).pack(side="right")
+        ttk.Button(hint, text="Ссылка на приложение…", command=self.on_cite_appendix).pack(
+            side="right", padx=4)
 
         box, self.text = scrolled_text(f, wrap="word", undo=True, font=MONO_FONT, height=8,
                                        relief="solid", borderwidth=1)
@@ -185,6 +187,21 @@ class TextPanel(_Panel):
                                 "«Список литературы».", parent=self.root)
             return
         dlg = CitationDialog(self.root, entries, self.ctl.profile_separator())
+        if dlg.result:
+            self.text.insert("insert", dlg.result)
+            self.text.focus_set()
+
+
+    @guarded
+    def on_cite_appendix(self) -> None:
+        from .dialogs import AppendixRefDialog
+
+        entries = [e for e in self.ctl.app_entries() if e.key]
+        if not entries:
+            messagebox.showinfo(APP_TITLE, "Приложений пока нет. Добавьте их: тип блока «Приложение».",
+                                parent=self.root)
+            return
+        dlg = AppendixRefDialog(self.root, entries)
         if dlg.result:
             self.text.insert("insert", dlg.result)
             self.text.focus_set()
@@ -412,3 +429,174 @@ class BibliographyPanel(_Panel):
         self.text.delete("1.0", "end")
         self.reload()
         return f"Добавлено записей: {len(res.paragraphs)}"
+
+
+# ============================================================== приложения
+class AppendixPanel(_Panel):
+    """Приложения списком (как литература): буквы А, Б, В… по порядку; ссылки {@P1}."""
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        f = self.frame
+        tbox = ttk.Frame(f)
+        tbox.pack(fill="x")
+        self.tree = ttk.Treeview(tbox, columns=("letter", "refs", "title"), show="headings",
+                                 selectmode="browse", height=5)
+        for col, title, width, stretch in (("letter", "Буква", 60, False), ("refs", "Ссылок", 60, False),
+                                           ("title", "Заголовок приложения", 500, True)):
+            self.tree.heading(col, text=title)
+            self.tree.column(col, width=width, stretch=stretch, anchor="w" if col == "title" else "center")
+        sb = ttk.Scrollbar(tbox, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="x", expand=True)
+        sb.pack(side="left", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        btns = ttk.Frame(f)
+        btns.pack(fill="x", pady=4)
+        for text, cmd in (("Новое приложение", self.on_new), ("↑", lambda: self._move(-1)),
+                          ("↓", lambda: self._move(1)), ("Удалить", self.on_remove),
+                          ("По порядку упоминания", self.on_sort)):
+            ttk.Button(btns, text=text, command=cmd).pack(side="left", padx=(0, 4))
+
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(4, 2))
+        row.columnconfigure(1, weight=1)
+        ttk.Label(row, text="Заголовок:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.heading_var = tk.StringVar()
+        self.heading_var.trace_add("write", self.changed)
+        ttk.Entry(row, textvariable=self.heading_var).grid(row=0, column=1, sticky="ew")
+        self.mode_label = ttk.Label(f, foreground="#555")
+        self.mode_label.pack(anchor="w")
+        box, self.text = scrolled_text(f, wrap="word", undo=True, font=MONO_FONT, height=6,
+                                       relief="solid", borderwidth=1)
+        box.pack(fill="both", expand=True)
+        install_plain_paste(self.text, self.root)
+        on_text_change(self.text, self.changed)
+        self._iid_el: dict[str, object] = {}
+        self._iid_key: dict[str, str | None] = {}
+        self.selected_el = None
+
+    @property
+    def action_label(self) -> str:
+        return "Сохранить приложение" if self.selected_el is not None else "Добавить приложение"
+
+    def has_input(self) -> bool:
+        return bool(self.heading_var.get().strip() or self.text.get("1.0", "end-1c").strip())
+
+    def on_shown(self) -> None:
+        self.reload()
+
+    def reload(self, select_el=None) -> None:
+        self.tree.delete(*self.tree.get_children())
+        self._iid_el.clear()
+        self._iid_key.clear()
+        refs = self.ctl.app_citations()
+        target = None
+        for e in self.ctl.app_entries():
+            iid = self.tree.insert("", "end", values=(e.letter, refs.get(e.key, 0) if e.key else "—",
+                                                      e.title or "(без заголовка)"))
+            self._iid_el[iid] = e.element
+            self._iid_key[iid] = e.key
+            if select_el is not None and e.element is select_el:
+                target = iid
+        if target:
+            self.tree.selection_set(target)
+            self.tree.see(target)
+            self._load(target)
+        elif select_el is None and self.selected_el is not None:
+            self._set_new_mode()
+
+    def select_element(self, el) -> None:
+        self.reload(select_el=el)
+
+    def _set_new_mode(self) -> None:
+        self.selected_el = None
+        self.heading_var.set("")
+        self.text.configure(state="normal", background="white")
+        self.text.delete("1.0", "end")
+        self.mode_label.configure(text="Новое приложение — получит следующую букву")
+        self.editor._update_buttons()
+
+    def _load(self, iid) -> None:
+        el = self._iid_el[iid]
+        content = self.ctl.section_content(el)
+        self.selected_el = el
+        self.heading_var.set(content.heading)
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", content.body)
+        self.text.edit_modified(False)
+        if not content.body_editable:
+            self.text.configure(state="disabled", background="#f0f0f0")
+        letter = self.tree.item(iid, "values")[0]
+        key = self._iid_key.get(iid)
+        self.mode_label.configure(text=f"Приложение {letter}" + (f" · ссылка в тексте: {{@{key}}}" if key else "")
+                                  + ("" if content.body_editable else " · " + content.reason))
+        self.editor._update_buttons()
+
+    def _on_select(self, _event=None) -> None:
+        sel = self.tree.selection()
+        if sel and self._iid_el.get(sel[0]) is not self.selected_el:
+            self._load(sel[0])
+            self.changed()
+
+    @guarded
+    def on_new(self) -> None:
+        if self.tree.selection():
+            self.tree.selection_remove(*self.tree.selection())
+        self._set_new_mode()
+        self.changed()
+
+    @guarded
+    def _move(self, delta: int) -> None:
+        if self.selected_el is None:
+            return
+        res = self.ctl.move_item(self.selected_el, delta)
+        el = self.selected_el
+        self.reload(select_el=el)
+        self.editor.after_document_change(res.message)
+
+    @guarded
+    def on_sort(self) -> None:
+        n = self.ctl.app_sort_by_mention()
+        self.reload(select_el=self.selected_el)
+        self.editor.after_document_change("Приложения расположены в порядке ссылок в тексте" if n
+                                          else "Порядок уже соответствует ссылкам в тексте")
+
+    @guarded
+    def on_remove(self) -> None:
+        if self.selected_el is None:
+            return
+        if not messagebox.askyesno(APP_TITLE, "Удалить " + self.ctl.describe_item(self.selected_el) + "?",
+                                   parent=self.root):
+            return
+        res = self.ctl.delete_item(self.selected_el)
+        self._set_new_mode()
+        self.reload()
+        self.editor.after_document_change(res.message)
+
+    def refresh_preview(self) -> None:
+        h, t = self.heading_var.get(), self.text.get("1.0", "end-1c")
+        if self.selected_el is not None:
+            res = self.ctl.preview_edit(self.selected_el, h, t)
+        else:
+            res = self.ctl.preview_block(BlockType.APPENDIX, text=t, heading=h)
+        self.editor.preview.show_result(res)
+
+    def perform(self) -> str:
+        h, t = self.heading_var.get(), self.text.get("1.0", "end-1c")
+        if self.selected_el is not None:
+            el = self.selected_el
+            res = self.ctl.update_section(el, h, t)
+            if not res.ok:
+                raise ValueError(res.message)
+            self.reload(select_el=el)
+            return res.message + (" · " + "; ".join(res.warnings) if res.warnings else "")
+        if not h.strip():
+            raise ValueError("Введите заголовок приложения")
+        before = {id(e.element) for e in self.ctl.app_entries()}
+        res = self.ctl.insert(BlockType.APPENDIX, text=t, heading=h)
+        new = next((e.element for e in self.ctl.app_entries() if id(e.element) not in before), None)
+        self.reload(select_el=new)
+        return "Приложение добавлено" + (" · " + "; ".join(res.warnings) if res.warnings else "")

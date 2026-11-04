@@ -159,3 +159,33 @@ class CitationDialog(_Dialog):
             parts[-1] += f", {loc}"
         self.result = "[" + "; ".join(parts) + "]"
         self.destroy()
+
+
+class AppendixRefDialog(_Dialog):
+    """Выбор приложения; результат — токен «{@P1}» (в документе станет буквой приложения)."""
+
+    def __init__(self, master, entries):
+        super().__init__(master, "Ссылка на приложение")
+        self.entries = entries
+        ttk.Label(self.body, text="В текст вставится буква приложения, например:\n"
+                                  "«см. приложение {@P1}» → «см. приложение А». "
+                                  "При перестановке приложений буква обновится.",
+                  foreground="#555", justify="left").pack(anchor="w")
+        self.listbox = tk.Listbox(self.body, height=10, width=70, activestyle="dotbox")
+        self.listbox.pack(fill="both", expand=True, pady=6)
+        for e in entries:
+            self.listbox.insert("end", f"Приложение {e.letter}. {e.title}")
+        if entries:
+            self.listbox.selection_set(0)
+        btns = ttk.Frame(self.body)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="Вставить", command=self._ok).pack(side="right", padx=6)
+        self.listbox.bind("<Double-1>", lambda e: self._ok())
+        self.run()
+
+    def _ok(self) -> None:
+        sel = self.listbox.curselection()
+        if sel:
+            self.result = "{@" + self.entries[sel[0]].key + "}"
+            self.destroy()

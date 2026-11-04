@@ -18,6 +18,7 @@ class AppController:
         self.profiles_dir = Path(profiles_dir) if profiles_dir else DEFAULT_PROFILES_DIR
         self.builder: DocumentBuilder | None = None
         self.dirty = False
+        self.order_fixed = False
 
     # ============================================================= профили
     def available_profiles(self) -> list[tuple[str, str]]:
@@ -62,6 +63,10 @@ class AppController:
         profile = self.get_profile(profile_key) if profile_key else None
         self.builder = DocumentBuilder.open(path, profile=profile, enforce_styles=enforce_styles)
         self.dirty = enforce_styles
+        self.order_fixed = self.builder.normalize_order()
+        if self.order_fixed:
+            self.builder.renumber()
+            self.dirty = True
         return self.builder
 
     def _require(self) -> DocumentBuilder:
@@ -176,6 +181,43 @@ class AppController:
         res = self._ops().move(element, delta)
         self.dirty = self.dirty or res.ok
         return res
+
+    def change_level(self, element, delta: int):
+        res = self._ops().change_level(element, delta)
+        self.dirty = self.dirty or res.ok
+        return res
+
+    def is_locked(self, element) -> bool:
+        return element.tag.endswith("}p") and self._ops().is_locked(element)
+
+    def set_locked(self, element, locked: bool):
+        from .structure_ops import OpResult
+
+        if not element.tag.endswith("}p"):
+            return OpResult(False, "Титульный лист всегда первый — закреплять не нужно")
+        res = self._ops().set_locked(element, locked)
+        self.dirty = True
+        return res
+
+    def available_elements(self, near=None):
+        return self._ops().available_elements(near)
+
+    def add_element(self, kind, near=None):
+        res = self._ops().add_element(kind, near)
+        self.dirty = self.dirty or res.ok
+        return res
+
+    # ---------------------------------------------------------- приложения
+    def app_entries(self):
+        return self._require().appendices.entries()
+
+    def app_citations(self):
+        return self._require().appendices.citation_counts()
+
+    def app_sort_by_mention(self) -> int:
+        n = self._require().appendices.sort_by_mention()
+        self.dirty = self.dirty or bool(n)
+        return n
 
     def describe_item(self, element) -> str:
         return self._ops().describe(element)

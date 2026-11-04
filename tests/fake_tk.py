@@ -49,6 +49,15 @@ class _Widget:
     def winfo_children(self):
         return []
 
+    def winfo_rootx(self):
+        return 0
+
+    def winfo_rooty(self):
+        return 0
+
+    def winfo_height(self):
+        return 0
+
     def after(self, ms, fn=None, *args):
         if fn:
             fn(*args)
@@ -192,8 +201,11 @@ class Entry(_Widget):
         super().__init__(master, **kw)
         self.value = ""
 
+    def get(self):
+        return self.value
+
     def insert(self, index, s):
-        self.value += s
+        self.value = s + self.value if index == 0 else self.value + s
 
     def delete(self, first, last=None):
         if str(first).startswith("sel"):

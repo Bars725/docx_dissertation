@@ -3,7 +3,9 @@
 Выбор пункта в структуре загружает его содержимое для правки («Сохранить изменения»).
 «Новый блок» очищает поля — дальше «Добавить в документ» вставит новый фрагмент
 в место, указанное в «Куда» (можно относительно выбранного пункта).
-Под структурой: ▲/▼ (Ctrl+↑/↓) — перемещение в пределах своего уровня, «Удалить» (Delete).
+Под структурой: «＋ Добавить…» (меню элементов), ▲/▼ (Ctrl+↑/↓) — порядок,
+◀/▶ (Ctrl+←/→) — уровень глава/подглава/пункт, «Закрепить» — запрет перемещения,
+«Удалить» (Delete). Порядок разделов ГОСТ программа поддерживает сама.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from tkinter import messagebox, ttk
 from ..document_builder import BLOCK_LABELS, BlockType, InsertPosition
 from ..outline import Kind
 from .common import APP_TITLE, guarded
-from .panels import BibliographyPanel, TextPanel, TitlePanel, TocPanel
+from .panels import AppendixPanel, BibliographyPanel, TextPanel, TitlePanel, TocPanel
 from .preview import PreviewView
 
 POSITIONS = [("auto", "Автоматически (по смыслу блока)"), ("end", "В конец документа"),
@@ -45,16 +47,24 @@ class EditorView:
         # ---- слева: структура + кнопки
         left = ttk.Frame(paned, padding=(0, 0, 8, 0))
         ttk.Label(left, text="Структура документа", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tools2 = ttk.Frame(left)
+        tools2.pack(side="bottom", fill="x", pady=(4, 0))
+        self.lock_btn = ttk.Button(tools2, text="Закрепить", command=self.on_toggle_lock)
+        self.lock_btn.pack(side="left")
+        ttk.Button(tools2, text="✕ Удалить", command=self.on_delete).pack(side="right")
         tools = ttk.Frame(left)
         tools.pack(side="bottom", fill="x", pady=(6, 0))
-        ttk.Button(tools, text="▲ Выше", width=9, command=lambda: self.on_move(-1)).pack(side="left")
-        ttk.Button(tools, text="▼ Ниже", width=9, command=lambda: self.on_move(1)).pack(side="left", padx=4)
-        ttk.Button(tools, text="✕ Удалить", width=11, command=self.on_delete).pack(side="right")
-        ttk.Label(left, text="Ctrl+↑/↓ — переместить, Delete — удалить", foreground="#777").pack(
-            side="bottom", anchor="w")
+        self.add_btn = ttk.Button(tools, text="＋ Добавить…", command=self.on_add_menu)
+        self.add_btn.pack(side="left")
+        for text, cmd in (("▲", lambda: self.on_move(-1)), ("▼", lambda: self.on_move(1)),
+                          ("◀", lambda: self.on_level(-1)), ("▶", lambda: self.on_level(1))):
+            ttk.Button(tools, text=text, width=3, command=cmd).pack(side="left", padx=(4, 0))
+        ttk.Label(left, text="Ctrl+↑↓ порядок · Ctrl+←→ уровень · Delete удалить",
+                  foreground="#777").pack(side="bottom", anchor="w")
         tbox = ttk.Frame(left)
         tbox.pack(fill="both", expand=True, pady=(4, 0))
-        self.tree = ttk.Treeview(tbox, show="tree", selectmode="browse")
+        self.tree = ttk.Treeview(tbox, columns=("pin",), show="tree", selectmode="browse")
+        self.tree.column("pin", width=44, stretch=False, anchor="center")
         sb = ttk.Scrollbar(tbox, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -63,6 +73,8 @@ class EditorView:
         self.tree.bind("<Delete>", lambda e: (self.on_delete(), "break")[1])
         self.tree.bind("<Control-Up>", lambda e: (self.on_move(-1), "break")[1])
         self.tree.bind("<Control-Down>", lambda e: (self.on_move(1), "break")[1])
+        self.tree.bind("<Control-Left>", lambda e: (self.on_level(-1), "break")[1])
+        self.tree.bind("<Control-Right>", lambda e: (self.on_level(1), "break")[1])
         paned.add(left, weight=1)
 
         # ---- справа
@@ -111,12 +123,17 @@ class EditorView:
 
         self.text_panel = TextPanel(self)
         self.panels = {BlockType.TITLE_PAGE: TitlePanel(self), BlockType.TOC: TocPanel(self),
-                       BlockType.BIBLIOGRAPHY: BibliographyPanel(self)}
+                       BlockType.BIBLIOGRAPHY: BibliographyPanel(self),
+                       BlockType.APPENDIX: AppendixPanel(self)}
         self.current = None
         self.refresh_outline()
         self._on_block_change()
-        self.status(f"Профиль: {self.ctl.builder.profile.name}. Выберите пункт слева, чтобы "
-                    "увидеть и изменить его текст.")
+        msg = (f"Профиль: {self.ctl.builder.profile.name}. Выберите пункт слева, чтобы "
+               "увидеть и изменить его текст.")
+        if getattr(self.ctl, "order_fixed", False):
+            msg = "Порядок разделов приведён к ГОСТ (титул, оглавление, введение, главы, " \
+                  "заключение, литература, приложения). " + msg
+        self.status(msg)
 
     # ------------------------------------------------------------ состояние
     def block(self) -> BlockType:
@@ -146,7 +163,13 @@ class EditorView:
             self.mode_var.set(f"Редактирование: «{label}» — «Сохранить изменения» заменит текст пункта")
         self._update_buttons()
 
+    def _update_lock_button(self) -> None:
+        el = self.selected_element()
+        locked = el is not None and self.ctl.is_locked(el)
+        self.lock_btn.configure(text="Открепить" if locked else "Закрепить")
+
     def _update_buttons(self) -> None:
+        self._update_lock_button()
         panel = self.current
         editing = self.editing_el is not None and panel is self.text_panel
         self.save_btn.configure(state="normal" if editing else "disabled")
@@ -215,7 +238,11 @@ class EditorView:
         el, kind = self._iid_to_el[iid], self._iid_kind[iid]
         block = KIND_TO_BLOCK.get(kind, BlockType.BODY)
         self._show_block(block)
-        if self.current is self.text_panel:
+        if kind == Kind.APPENDIX:
+            self._set_editing(None)
+            self.current.select_element(el)
+            self.mode_var.set(f"«{self.tree.item(iid, 'text')}» — правка в панели приложений")
+        elif self.current is self.text_panel:
             content = self.ctl.section_content(el)
             self.text_panel.load_section(content)
             self._set_editing(el, self.tree.item(iid, "text"))
@@ -253,7 +280,9 @@ class EditorView:
             parents = {-1: ""}
             for item in self.ctl.outline():
                 parent = parents.get(item.level - 1, "")
-                iid = self.tree.insert(parent, "end", text=item.text or "(пусто)", open=True)
+                locked = item.element.tag.endswith("}p") and self.ctl.is_locked(item.element)
+                iid = self.tree.insert(parent, "end", text=item.text or "(пусто)", open=True,
+                                       values=("закр." if locked else "",))
                 parents[item.level] = iid
                 for deeper in [k for k in parents if k > item.level]:
                     del parents[deeper]
@@ -267,6 +296,7 @@ class EditorView:
             self._suppress_select = False
         if self.editing_el is not None and self.editing_el not in self._iid_to_el.values():
             self._set_editing(None)
+        self._update_lock_button()
 
     def after_document_change(self, msg: str | None = None, select_el=None) -> None:
         self.refresh_outline(select_el)
@@ -340,3 +370,59 @@ class EditorView:
             self.text_panel.clear_input()
             self._set_editing(None)
         self.after_document_change(res.message + (" · " + "; ".join(res.warnings) if res.warnings else ""))
+
+    # ------------------------------------------- добавление / уровень / замок
+    @guarded
+    def on_add_menu(self) -> None:
+        menu = tk.Menu(self.root, tearoff=False)
+        for kind, label, ok, why in self.ctl.available_elements(self.selected_element()):
+            menu.add_command(label=label + ("" if ok else f" — {why}"),
+                             state="normal" if ok else "disabled",
+                             command=lambda k=kind: self.on_add_element(k))
+        x = (self.add_btn.winfo_rootx() or 0)
+        y = (self.add_btn.winfo_rooty() or 0) + (self.add_btn.winfo_height() or 0)
+        menu.tk_popup(x, y)
+
+    @guarded
+    def on_add_element(self, kind: Kind) -> None:
+        if self.editing_el is not None and self.text_panel.has_changes() and not messagebox.askyesno(
+                APP_TITLE, "Изменения в текущем пункте не сохранены. Отменить их?", parent=self.root):
+            return
+        res = self.ctl.add_element(kind, near=self.selected_element())
+        if not res.ok:
+            self.status(res.message)
+            return
+        self.after_document_change(res.message, select_el=res.element)
+        if self._selected_iid:
+            self.load_item(self._selected_iid)
+        if self.current is self.text_panel and self.editing_el is not None:
+            entry = self.text_panel.heading_entry
+            entry.focus_set()
+            entry.select_range(0, "end")
+        self.status(res.message + " — впишите заголовок и текст, затем «Сохранить изменения»")
+
+    @guarded
+    def on_level(self, delta: int) -> None:
+        el = self.selected_element()
+        if el is None:
+            self.status("Выберите пункт в структуре")
+            return
+        if self.editing_el is el and self.text_panel.has_changes():
+            raise ValueError("Сначала сохраните изменения в пункте (или нажмите «Новый блок»)")
+        res = self.ctl.change_level(el, delta)
+        if res.ok:
+            self.after_document_change(res.message, select_el=el)
+            if self._selected_iid:
+                self.load_item(self._selected_iid)
+            self.status(res.message)
+        else:
+            self.status(res.message)
+
+    @guarded
+    def on_toggle_lock(self) -> None:
+        el = self.selected_element()
+        if el is None:
+            self.status("Выберите пункт в структуре")
+            return
+        res = self.ctl.set_locked(el, not self.ctl.is_locked(el))
+        self.after_document_change(res.message, select_el=el)

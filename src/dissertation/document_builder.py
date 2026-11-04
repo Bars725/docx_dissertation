@@ -16,7 +16,8 @@ from docx.shared import Mm
 from docx.text.paragraph import Paragraph
 
 from . import ooxml
-from .bibliography import Bibliography, has_citations
+from .bibliography import Bibliography
+from .xref import XRef, has_refs
 from .outline import Kind, OutlineItem, StyleResolver, build_outline
 from .profile import FormattingProfile
 from .runs import make_run, prepend_text, replace_text, set_paragraph_text, visible_text
@@ -188,6 +189,77 @@ class DocumentBuilder:
     def bibliography(self) -> Bibliography:
         return Bibliography(self)
 
+    @property
+    def appendices(self):
+        from .appendices import Appendices
+
+        return Appendices(self)
+
+    # ====================================================== порядок по ГОСТ
+    # 1 титул · 2 оглавление · (реферат, сокращения…) · 3 введение · 4 основная часть ·
+    # 5 заключение · 6 список литературы · 7 приложения
+    ZONE_RANK = {Kind.TITLE: 0, Kind.TOC: 1, Kind.OTHER_STRUCTURAL: 2, Kind.INTRODUCTION: 3,
+                 Kind.CHAPTER: 4, Kind.CONCLUSION: 5, Kind.BIBLIOGRAPHY: 6, Kind.APPENDIX: 7}
+
+    def normalize_order(self) -> bool:
+        """Переставить разделы верхнего уровня в порядок ГОСТ (устойчиво). True — если менялось."""
+        body = self.document.element.body
+        children = [c for c in body if c.tag != ooxml.W_SECTPR]
+        top = {}
+        for it in self.outline():
+            if it.level != 0:
+                continue
+            el = it.element
+            while el.getparent() is not body:
+                el = el.getparent()
+            top.setdefault(id(el), (el, it.kind))
+        groups, current = [], (-1, [])
+        for c in children:
+            if id(c) in top:
+                groups.append(current)
+                current = (self.ZONE_RANK.get(top[id(c)][1], 4), [c])
+            else:
+                current[1].append(c)
+        groups.append(current)
+        groups = [g for g in groups if g[1]]
+        ordered = sorted(groups, key=lambda g: g[0])          # sorted() устойчив
+        if [id(g[1][0]) for g in ordered] == [id(g[1][0]) for g in groups]:
+            return False
+        sect = body.find(ooxml.W_SECTPR)
+        for _, els in ordered:
+            for el in els:
+                body.remove(el)
+                if sect is not None:
+                    sect.addprevious(el)
+                else:
+                    body.append(el)
+        return True
+
+    def _clamp_main_zone(self, block, where, anchor, result):
+        """Глава/подглава/пункт/текст — только в основной части (до заключения/списка/приложений)."""
+        if block not in (BlockType.CHAPTER, BlockType.SUBCHAPTER, BlockType.SECTION):
+            return where, anchor
+        outline = self.outline()
+        limit_el = next((it.element for it in outline if it.kind in
+                         (Kind.CONCLUSION, Kind.BIBLIOGRAPHY, Kind.APPENDIX)), None)
+        if limit_el is None:
+            return where, anchor
+        blocks = list(ooxml.iter_body_blocks(self.document.element.body))
+        index = {id(el): i for i, el in enumerate(blocks)}
+        limit = index[id(limit_el)]
+        if where == "end":
+            pos = len(blocks)
+        elif where == "start":
+            pos = 0
+        else:
+            pos = index.get(id(anchor), len(blocks)) + (0 if where == "before" else 1)
+        if pos > limit:
+            result.warnings.append("По ГОСТ основная часть стоит до заключения, списка литературы "
+                                   "и приложений — вставлено перед «"
+                                   + " ".join(ooxml.element_text(limit_el).split()) + "»")
+            return "before", limit_el
+        return where, anchor
+
     # ======================================================= титульный лист
     def title_data(self):
         from .title_page import read_title_data
@@ -239,9 +311,10 @@ class DocumentBuilder:
         if not plan:
             return res
         where, anchor = self._resolve_position(block, position, tmp)
+        where, anchor = self._clamp_main_zone(block, where, anchor, tmp)
+        res.warnings = tmp.warnings
         n, m, k, apps = self._counters_before(where, anchor)
         num = self.profile.numbering
-        bib = self.bibliography
         for role, value in plan:
             if num.enabled and role in (Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION):
                 fmt = {Role.CHAPTER: num.chapter, Role.SUBCHAPTER: num.subchapter,
@@ -253,8 +326,8 @@ class DocumentBuilder:
                 value = fmt.format(n=nn[0], m=nn[1], k=nn[2], title=title)
             elif role == Role.APPENDIX:
                 value = self.profile.appendix_label.format(letter=self.profile.appendix_letter(apps))
-            elif role == Role.BODY and has_citations(value):
-                value = bib.render_citations(value)
+            elif role == Role.BODY and has_refs(value):
+                value = XRef(self).render(value)
             res.items.append((role, value))
         res.page_breaks = [self._role_breaks(r) for r, _ in res.items]
         res.where = self._describe_position(where, anchor)
@@ -348,12 +421,13 @@ class DocumentBuilder:
             raise ValueError("Нечего вставлять: введите текст или заголовок")
 
         where, anchor = self._resolve_position(block, position, result)
+        where, anchor = self._clamp_main_zone(block, where, anchor, result)
         add = self._inserter(where, anchor)
         self._unknown_refs = []
         for role, value in plan:
             result.paragraphs.append(add(role, value))
         if self._unknown_refs:
-            result.warnings.append("Нет в списке литературы: " + ", ".join(sorted(set(self._unknown_refs)))
+            result.warnings.append("Неизвестные ссылки: " + ", ".join(sorted(set(self._unknown_refs)))
                                    + " — в тексте показано «?»")
 
         if block == BlockType.TITLE_PAGE:
@@ -515,8 +589,8 @@ class DocumentBuilder:
                 p = ooxml.new_paragraph_after(state["cursor"], body)
                 state["cursor"] = p._p
             p.style = self.styles.style_for(role)
-            if text and role == Role.BODY and has_citations(text):
-                p._p.extend(self.bibliography.rich_runs(text, self._unknown_refs))
+            if text and role == Role.BODY and has_refs(text):
+                p._p.extend(XRef(self).rich_runs(text, self._unknown_refs))
             elif text:
                 p._p.append(make_run(text))   # без прямого форматирования — только стиль
             return p
@@ -555,6 +629,7 @@ class DocumentBuilder:
         и остальной текст заголовка не трогаются. Заголовки, не подходящие под
         формат профиля (оформлены вручную иначе), пропускаются.
         """
+        self.normalize_order()
         outline = self.outline()
         num = self.profile.numbering
         if num.enabled:
@@ -573,19 +648,10 @@ class DocumentBuilder:
                     continue
                 self._set_number_prefix(it.element, fmt, n, m, k)
 
-        resolver = StyleResolver(self.document)
-        idx = 0
-        for it in outline:
-            if it.kind != Kind.APPENDIX:
-                continue
-            if resolver.role_of(it.element) == Role.APPENDIX:
-                expected = self.profile.appendix_label.format(letter=self.profile.appendix_letter(idx))
-                para = Paragraph(it.element, self.document._body)
-                if visible_text(para).strip() != expected:
-                    set_paragraph_text(para, expected)
-            idx += 1
+        self.appendices.refresh()
         self._renumber_bibliography(outline)
         self.bibliography.refresh()
+        XRef(self).refresh_fields()
         from .toc import refresh_toc
 
         refresh_toc(self)

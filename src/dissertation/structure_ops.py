@@ -13,13 +13,16 @@ from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
 from . import fields, ooxml
-from .bibliography import BM_PREFIX, has_citations
+from .bibliography import BM_PREFIX
+from .xref import APP_PREFIX, XRef, has_refs
 from .outline import Kind, OutlineItem, StyleResolver
 from .runs import make_run, set_paragraph_text, visible_text
 from .style_manager import Role
 from .text_cleaner import CleanOptions, TextCleaner
 
-MOVABLE = {Kind.CHAPTER, Kind.SUBCHAPTER, Kind.SECTION, Kind.APPENDIX}
+MOVABLE = {Kind.CHAPTER, Kind.SUBCHAPTER, Kind.SECTION, Kind.APPENDIX, Kind.OTHER_STRUCTURAL}
+LEVEL_KINDS = [Kind.CHAPTER, Kind.SUBCHAPTER, Kind.SECTION]
+LOCK_PREFIX = "_GostLock_"
 KIND_RU = {Kind.CHAPTER: "глава", Kind.SUBCHAPTER: "подглава", Kind.SECTION: "пункт",
            Kind.APPENDIX: "приложение", Kind.INTRODUCTION: "введение", Kind.CONCLUSION: "заключение",
            Kind.BIBLIOGRAPHY: "список литературы", Kind.TOC: "оглавление",
@@ -43,6 +46,7 @@ class OpResult:
     ok: bool
     message: str
     warnings: list[str] = field(default_factory=list)
+    element: object = None          # созданный/затронутый элемент (для выделения в GUI)
 
 
 class StructureOps:
@@ -183,8 +187,8 @@ class StructureOps:
         if ppr is not None and ppr.find(qn("w:numPr")) is not None:
             return "список"
         for f in fields.iter_complex_fields(el):
-            target = fields.ref_target(f.instr)
-            if not (target and target.startswith(BM_PREFIX)):
+            target = fields.ref_target(f.instr) or ""
+            if not target.startswith((BM_PREFIX, APP_PREFIX)):
                 return "поле Word"
         return None
 
@@ -202,9 +206,11 @@ class StructureOps:
                         stack[-1]["state"] = "result"
                     elif kind == "end" and stack:
                         f = stack.pop()
-                        target = fields.ref_target(f["instr"])
-                        if target and target.startswith(BM_PREFIX):
+                        target = fields.ref_target(f["instr"]) or ""
+                        if target.startswith(BM_PREFIX):
                             out.append(f"\x01{target[len(BM_PREFIX):]}\x02")
+                        elif target.startswith(APP_PREFIX):
+                            out.append("{@" + target[len(APP_PREFIX):] + "}")
                 elif child.tag == fields.W_INSTR and stack:
                     stack[-1]["instr"] += child.text or ""
                 elif stack:
@@ -286,8 +292,8 @@ class StructureOps:
                 res.items.append((Role.APPENDIX_TITLE, title or content.heading))
         if content.body_editable:
             paras = cleaner.to_paragraphs(body) if clean else [ln for ln in body.split("\n") if ln.strip()]
-            bib = self.b.bibliography
-            paras = [bib.render_citations(p) if has_citations(p) else p for p in paras]
+            xr = XRef(self.b)
+            paras = [xr.render(p) for p in paras]
         else:
             paras = [p for p in content.body.split("\n\n") if p]
             res.warnings.append("Только для чтения: " + content.reason)
@@ -295,34 +301,236 @@ class StructureOps:
         res.page_breaks = [self.b._role_breaks(r) for r, _ in res.items]
         return res
 
+    # ======================================================= замок
+    def is_locked(self, element) -> bool:
+        return any((bm.get(qn("w:name")) or "").startswith(LOCK_PREFIX)
+                   for bm in element.iter(fields.W_BM_START))
+
+    def set_locked(self, element, locked: bool) -> OpResult:
+        """Закрепить пункт на месте: невидимая закладка в заголовке (переживает Word/LO)."""
+        if locked == self.is_locked(element):
+            return OpResult(True, "Без изменений")
+        if locked:
+            from docx.oxml import OxmlElement
+
+            bm_id = fields.next_bookmark_id(self.doc)
+            start = OxmlElement("w:bookmarkStart")
+            start.set(qn("w:id"), str(bm_id))
+            start.set(qn("w:name"), f"{LOCK_PREFIX}{bm_id}")
+            end = OxmlElement("w:bookmarkEnd")
+            end.set(qn("w:id"), str(bm_id))
+            ppr = element.find(qn("w:pPr"))
+            if ppr is not None:
+                ppr.addnext(start)
+            else:
+                element.insert(0, start)
+            start.addnext(end)
+            return OpResult(True, "Пункт закреплён: его место и уровень не изменятся")
+        for bm in list(element.iter(fields.W_BM_START)):
+            if (bm.get(qn("w:name")) or "").startswith(LOCK_PREFIX):
+                bm_id = bm.get(qn("w:id"))
+                for end in list(element.iter(fields.W_BM_END)):
+                    if end.get(qn("w:id")) == bm_id:
+                        end.getparent().remove(end)
+                bm.getparent().remove(bm)
+        return OpResult(True, "Пункт откреплён")
+
+    def _locked_msg(self, item) -> OpResult:
+        return OpResult(False, f"«{item.text}» закреплён — снимите замок, чтобы изменить его место")
+
     # ======================================================= перемещение
-    def move(self, element, delta: int) -> OpResult:
-        outline, i, sibs = self.parent_and_siblings(element)
-        item = outline[i]
-        if item.kind not in MOVABLE:
-            return OpResult(False, f"«{item.text}» — {KIND_RU.get(item.kind, 'элемент')} с "
-                                   "фиксированным местом по ГОСТ, переместить нельзя")
-        pos = sibs.index(i)
-        j = pos + (1 if delta > 0 else -1)
-        if j < 0 or j >= len(sibs):
-            return OpResult(False, "Дальше перемещать некуда")
-        neighbor = outline[sibs[j]]
-        if neighbor.kind != item.kind:
-            where = "выше" if delta < 0 else "ниже"
-            return OpResult(False, f"{KIND_RU[item.kind].capitalize()} не может стоять {where} — "
-                                   f"там «{neighbor.text}»")
-        mine = self.section_elements(item.element)
-        theirs = self.section_elements(neighbor.element)
-        if delta < 0:
-            target = theirs[0]
-            for el in mine:
-                target.addprevious(el)
+    def _move_block(self, elems, *, before=None, after=None) -> None:
+        if before is not None:
+            for el in elems:
+                before.addprevious(el)
         else:
-            target = theirs[-1]
-            for el in reversed(mine):
-                target.addnext(el)
+            for el in reversed(elems):
+                after.addnext(el)
+
+    def _own_end(self, element):
+        """Последний элемент «собственного» текста пункта (или сам заголовок)."""
+        body = self.own_body(element)
+        if self._items_kind(element) == Kind.APPENDIX:
+            t = self._appendix_title(element)
+            if t is not None and not body:
+                return t
+        return body[-1] if body else self._top(element)
+
+    def _items_kind(self, element) -> Kind:
+        i, outline = self._item(element)
+        return outline[i].kind
+
+    def move(self, element, delta: int) -> OpResult:
+        """Вверх/вниз. Глава ↔ глава, приложение ↔ приложение; подглава и пункт могут
+        переходить в соседнюю главу/подглаву. Порядок разделов ГОСТ не нарушается."""
+        i, outline = self._item(element)
+        item = outline[i]
+        if self.is_locked(item.element):
+            return self._locked_msg(item)
+        if item.kind not in MOVABLE:
+            return OpResult(False, f"«{item.text}» — {KIND_RU.get(item.kind, 'элемент')}: его место "
+                                   "определено порядком ГОСТ (титул, оглавление, введение, основная "
+                                   "часть, заключение, список литературы, приложения)")
+        up = delta < 0
+        outline, i, sibs = self.parent_and_siblings(element)
+        pos = sibs.index(i)
+        j = pos - 1 if up else pos + 1
+        if 0 <= j < len(sibs):
+            neighbor = outline[sibs[j]]
+            if neighbor.kind == item.kind:
+                if self.is_locked(neighbor.element):
+                    return OpResult(False, f"Соседний пункт «{neighbor.text}» закреплён")
+                mine = self.section_elements(item.element)
+                theirs = self.section_elements(neighbor.element)
+                if up:
+                    self._move_block(mine, before=theirs[0])
+                else:
+                    self._move_block(mine, after=theirs[-1])
+                self.b.renumber()
+                return OpResult(True, "Перемещено, номера пересчитаны")
+            if item.level == 0:
+                return OpResult(False, f"{KIND_RU[item.kind].capitalize()} не может стоять "
+                                       f"{'выше' if up else 'ниже'} — там «{neighbor.text}» (порядок ГОСТ)")
+        if item.level == 0:
+            return OpResult(False, "Дальше перемещать некуда")
+        # --- переход в соседнего «родителя»: подглава → в соседнюю главу, пункт → в соседнюю подглаву
+        parent_kind = LEVEL_KINDS[item.level - 1]
+        parents = [it for it in outline if it.kind == parent_kind]
+        my_parent = next(outline[k] for k in range(i - 1, -1, -1) if outline[k].level < item.level)
+        if my_parent.kind != parent_kind or my_parent not in parents:
+            return OpResult(False, "Дальше перемещать некуда")
+        pidx = parents.index(my_parent)
+        target_idx = pidx - 1 if up else pidx + 1
+        if not 0 <= target_idx < len(parents):
+            return OpResult(False, "Дальше перемещать некуда")
+        target = parents[target_idx]
+        mine = self.section_elements(item.element)
+        if up:       # стать последним в предыдущем родителе
+            self._move_block(mine, after=self.section_elements(target.element)[-1])
+        else:        # стать первым в следующем родителе
+            self._move_block(mine, after=self._own_end(target.element))
         self.b.renumber()
-        return OpResult(True, "Перемещено, номера пересчитаны")
+        return OpResult(True, f"Перемещено в «{target.text}», номера пересчитаны")
+
+    # ======================================================= уровень
+    def change_level(self, element, delta: int) -> OpResult:
+        """← повысить (пункт → подглава → глава), → понизить; вместе с подпунктами."""
+        i, outline = self._item(element)
+        item = outline[i]
+        if item.kind not in LEVEL_KINDS:
+            return OpResult(False, f"У элемента «{item.text}» нет уровня глава/подглава/пункт")
+        if self.is_locked(item.element):
+            return self._locked_msg(item)
+        new_level = item.level + delta
+        if new_level < 0:
+            return OpResult(False, "Это уже глава — выше уровня нет")
+        sub = [it for it in outline[i:] if it is item or (
+            it.level > item.level and self._top(it.element) in self.section_elements(item.element))]
+        if max(it.level for it in sub) + delta > 2:
+            return OpResult(False, "Глубже пункта (3-й уровень) по ГОСТ не нумеруется — "
+                                   "сначала поднимите вложенные пункты")
+        if delta > 0:
+            prev = next((outline[k] for k in range(i - 1, -1, -1) if outline[k].level <= item.level), None)
+            if prev is None or prev.kind != item.kind or prev.level != item.level:
+                return OpResult(False, "Понизить нельзя: выше нет "
+                                       f"{'главы' if item.level == 0 else 'подглавы'}, в которую можно вложить")
+        from .document_builder import BlockType
+
+        own_title = self._strip_number(item)
+        block_of = {0: BlockType.CHAPTER, 1: BlockType.SUBCHAPTER, 2: BlockType.SECTION}
+        role_of = {0: Role.CHAPTER, 1: Role.SUBCHAPTER, 2: Role.SECTION}
+        for it in sub:
+            title = self._strip_number(it)
+            lvl = it.level + delta
+            para = Paragraph(it.element, self.doc._body)
+            para.style = self.b.styles.style_for(role_of[lvl])
+            set_paragraph_text(para, self.b._numbered_heading(block_of[lvl], title))
+        self.b.renumber()
+        what = {0: "главой", 1: "подглавой", 2: "пунктом"}[new_level]
+        return OpResult(True, f"«{own_title}» теперь {what}, номера пересчитаны")
+
+    # ======================================================= добавление
+    def available_elements(self, near=None) -> list[tuple[Kind, str, bool, str]]:
+        """[(вид, подпись, доступен, причина)] для меню «Добавить элемент структуры»."""
+        outline = self.b.outline()
+        kinds = {it.kind for it in outline}
+        has_sub = Kind.SUBCHAPTER in kinds
+        out = []
+        for kind, label in ((Kind.TITLE, "Титульный лист"), (Kind.TOC, "Оглавление"),
+                            (Kind.INTRODUCTION, "Введение"), (Kind.CHAPTER, "Глава"),
+                            (Kind.SUBCHAPTER, "Подглава"), (Kind.SECTION, "Пункт"),
+                            (Kind.CONCLUSION, "Заключение"), (Kind.BIBLIOGRAPHY, "Список литературы"),
+                            (Kind.APPENDIX, "Приложение")):
+            ok, why = True, ""
+            if kind in (Kind.TITLE, Kind.TOC, Kind.INTRODUCTION, Kind.CONCLUSION, Kind.BIBLIOGRAPHY) \
+                    and kind in kinds:
+                ok, why = False, "уже есть"
+            elif kind == Kind.SUBCHAPTER and Kind.CHAPTER not in kinds:
+                ok, why = False, "сначала добавьте главу"
+            elif kind == Kind.SECTION and not has_sub:
+                ok, why = False, "сначала добавьте подглаву"
+            out.append((kind, label, ok, why))
+        return out
+
+    def _enclosing(self, element, kind: Kind):
+        if element is None:
+            return None
+        i, outline = self._item(element)
+        level = LEVEL_KINDS.index(kind) if kind in LEVEL_KINDS else 0
+        for k in range(i, -1, -1):
+            it = outline[k]
+            if it.kind == kind:
+                return it
+            if it.level < level or (it.level == 0 and it.kind not in LEVEL_KINDS):
+                return None
+        return None
+
+    def add_element(self, kind: Kind, near=None) -> OpResult:
+        """Создать элемент рядом с выбранным пунктом (OpResult.element — новый заголовок)."""
+        from .document_builder import BlockType, InsertPosition, InsertResult
+
+        before = {id(it.element) for it in self.b.outline()}
+        if kind == Kind.TITLE:
+            from .title_page import TitlePageData
+
+            self.b.set_title_page(TitlePageData())
+        elif kind == Kind.TOC:
+            self.b.insert_block(BlockType.TOC)
+        elif kind in (Kind.INTRODUCTION, Kind.CONCLUSION):
+            if self.b.find(kind) is not None:
+                return OpResult(False, "Такой элемент уже есть")
+            block = BlockType.INTRODUCTION if kind == Kind.INTRODUCTION else BlockType.CONCLUSION
+            where, anchor = self.b._resolve_position(block, InsertPosition(), InsertResult())
+            title = self.b._structural_text(self.b.profile.introduction_title if block ==
+                                            BlockType.INTRODUCTION else self.b.profile.conclusion_title)
+            self.b._inserter(where, anchor)(Role.STRUCTURAL, title)
+            self.b.renumber()
+        elif kind == Kind.BIBLIOGRAPHY:
+            self.b.bibliography._ensure_heading()
+            self.b.renumber()
+        elif kind == Kind.APPENDIX:
+            self.b.insert_block(BlockType.APPENDIX, heading="Новое приложение")
+        elif kind in LEVEL_KINDS:
+            block = {Kind.CHAPTER: BlockType.CHAPTER, Kind.SUBCHAPTER: BlockType.SUBCHAPTER,
+                     Kind.SECTION: BlockType.SECTION}[kind]
+            title = {Kind.CHAPTER: "Новая глава", Kind.SUBCHAPTER: "Новая подглава",
+                     Kind.SECTION: "Новый пункт"}[kind]
+            pos = InsertPosition()
+            if near is not None:
+                if kind == Kind.CHAPTER:
+                    anchor_item = self._enclosing(near, Kind.CHAPTER)
+                elif kind == Kind.SUBCHAPTER:
+                    anchor_item = self._enclosing(near, Kind.SUBCHAPTER) or self._enclosing(near, Kind.CHAPTER)
+                else:
+                    anchor_item = self._enclosing(near, Kind.SECTION) or self._enclosing(near, Kind.SUBCHAPTER)
+                if anchor_item is not None:
+                    pos = InsertPosition("section_end", anchor_item.element)
+            self.b.insert_block(block, heading=title, position=pos)
+        else:
+            return OpResult(False, "Этот элемент нельзя добавить")
+        new = [it for it in self.b.outline() if id(it.element) not in before and it.kind == kind]
+        return OpResult(True, f"Добавлено: {new[0].text if new else KIND_RU.get(kind, '')}",
+                        element=new[0].element if new else None)
 
     # ========================================================= удаление
     def describe(self, element) -> str:
@@ -343,6 +551,8 @@ class StructureOps:
     def delete(self, element) -> OpResult:
         i, outline = self._item(element)
         item = outline[i]
+        if item.element.tag == ooxml.W_P and self.is_locked(item.element):
+            return OpResult(False, f"«{item.text}» закреплён — снимите замок, чтобы удалить")
         refs_before = sum(self.b.bibliography.citation_counts().values()) \
             if item.kind == Kind.BIBLIOGRAPHY else 0
         for el in self.section_elements(element):
@@ -354,4 +564,4 @@ class StructureOps:
         return OpResult(True, f"Удалено: {item.text}", warnings)
 
 
-__all__ = ["StructureOps", "SectionContent", "OpResult", "has_citations", "make_run"]
+__all__ = ["StructureOps", "SectionContent", "OpResult", "has_refs", "make_run"]
