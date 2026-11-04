@@ -95,6 +95,28 @@ def _layout(data: TitlePageData, half_cm: float):
     ]
 
 
+def preview_lines(data: TitlePageData) -> list[tuple[str, str, bool, int]]:
+    """Для предпросмотра формы: [(текст, выравнивание, полужирный, отступ_сверху_строк)]."""
+    out = []
+    for r, (_share, _valign, lines) in enumerate(_layout(data, 0)):
+        for i, line in enumerate(lines):
+            if line.key == "manuscript":
+                text = line.prefix
+            else:
+                parts = [line.prefix] if line.prefix else []
+                if line.key:
+                    parts.append(str(getattr(data, line.key)).strip())
+                if line.suffix_key:
+                    parts.append(line.joiner + str(getattr(data, line.suffix_key)).strip())
+                text = "".join(parts)
+            if line.caps:
+                text = text.upper()
+            align = "right" if line.align == "right" or line.left_indent_cm else line.align
+            gap = (3 if r else 0) if i == 0 else (1 if line.before_pt else 0)
+            out.append((text, align, line.bold, gap))
+    return out
+
+
 def read_title_data(document) -> TitlePageData | None:
     body = document.element.body
     names = fields.bookmark_names(body, TITLE_BOOKMARK_PREFIX)

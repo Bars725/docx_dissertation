@@ -51,9 +51,13 @@
 | `outline.py` | `StyleResolver`, `build_outline`, `Kind` | Цепочка стилей (`basedOn`, docDefaults), уровень структуры, распознавание глав/введения/списка/приложений, в том числе в чужих файлах |
 | `runs.py` | `replace_text`, `set_paragraph_text`, `prepend_text`, `fill_placeholders` | Операции над текстом абзаца, устойчивые к дроблению на runs |
 | `text_cleaner.py` | `TextCleaner`, `CleanOptions` | Склейка переносов из PDF, пробелы, невидимые символы, разбиение на абзацы, список литературы |
+| `bibliography.py` | `Bibliography`, `BibEntry` | Записи списка литературы с постоянными ключами (закладка `_GostRef_R3` вокруг номера), ссылки `[@R3]` → поля `REF`, сортировка, пересчёт номеров и кэша полей |
+| `toc.py` | `insert_toc`, `refresh_toc` | Оглавление: поле `TOC \o "1-3" \h \z \u` в блоке docPart, кэш пунктов, `updateFields` |
+| `title_page.py` | `TitlePageData`, `set_title_page` | Титульный лист из формы: невидимая таблица с точной высотой строк, значения в закладках `_GostTitle_*` |
+| `fields.py` | `iter_complex_fields`, закладки | Сложные поля, закладки, флаги `settings.xml` в порядке схемы |
 | `document_builder.py` | `DocumentBuilder`, `BlockType`, `InsertPosition` | Новый/открытый документ, вставка блоков, «умная» позиция, пересчёт номеров, номера страниц, атомарное сохранение |
 | `controller.py` | `AppController` | Склейка всего для GUI/CLI, хранилище профилей `~/.dissertation_docx/profiles` |
-| `gui/app.py` | `App`, `EditorFrame`, диалоги | Интерфейс |
+| `gui/app.py`, `editor.py`, `panels.py`, `preview.py`, `dialogs.py` | `App`, `EditorView`, панели, `PreviewView` | Интерфейс; новые части — композицией (виджет в атрибуте), чтобы не перекрыть внутренние методы Tk |
 | `__main__.py` | CLI | `inspect`, `profile`, `new`, `add` для пакетной проверки |
 
 ### Сценарии
@@ -175,6 +179,20 @@ ooxml.get_or_insert(ppr, "w:outlineLvl", PPR_SEQ).set(qn("w:val"), "0")  # в о
 * Обход частей документа (`iter_all_paragraph_elements`) охватывает тело,
   вложенные таблицы, `w:sdt` и все колонтитулы всех секций без дублей связанных.
 
+### 4.4 «Живые» ссылки на литературу
+
+```
+список:  <w:bookmarkStart w:name="_GostRef_R3"/><w:r><w:t>3</w:t></w:r><w:bookmarkEnd/>. Иванов…
+текст:   [ <fldChar begin/> REF _GostRef_R3 \h <fldChar separate/> 3 <fldChar end/> , с. 15]
+```
+
+Ключ записи (R3) не меняется при сортировке, меняется только номер внутри закладки.
+Word по F9 сам подставит номер из закладки. Программа при любом изменении списка
+пересчитывает номера и кэш всех полей `REF`, поэтому документ верен и без F9
+(и в LibreOffice: это проверено пересохранением). Новый ключ всегда больше всех
+занятых, включая ключи «осиротевших» ссылок, чтобы ссылка на удалённый источник
+не прицепилась к новому.
+
 ## 5. План разработки
 
 | Этап | Содержание | Как тестировать | Подводные камни | Статус |
@@ -187,7 +205,7 @@ ooxml.get_or_insert(ppr, "w:outlineLvl", PPR_SEQ).set(qn("w:val"), "0")  # в о
 | 6 | `TemplateParser` | `test_template_parser.py`: образец «как из Word», roundtrip профиль→docx→профиль | basedOn-цепочки, `firstLineChars`, exact-интервал | ✅ |
 | 7 | GUI Tkinter | Ручной чек-лист в `docs/TESTING.md` | Ctrl+V на русской раскладке (keycode), DPI в Windows | ✅ базовый |
 | 8 | Совместимость: LO / Word / Google Docs | `test_libreoffice_roundtrip.py` + матрица в TESTING.md | LO меняет styleId; Google Docs убирает свои стили | ✅ LO, ⏳ Word/GDocs вручную |
-| 9 | Оглавление (поле `TOC \o "1-3" \h`), подписи рисунков/таблиц («Рисунок 1 – …»), формулы | Обновление полей в Word (F9) | python-docx не вычисляет поля, нужен `w:updateFields` или F9 | ⏳ |
+| 9 | Оглавление ✅, список литературы со ссылками-полями ✅, титул-форма ✅, живой предпросмотр ✅; подписи рисунков/таблиц, формулы ⏳ | `test_bibliography.py`, `test_title_toc_preview.py`, `test_gui_flow.py` (фейковый и настоящий Tk) | Номера страниц в оглавлении вычисляет только Word/LO | ◐ |
 | 10 | Редактор профиля в GUI, альбомные страницы (секции), титул по шаблону вуза (docxtpl) | — | Разные колонтитулы в секциях | ⏳ |
 | 11 | Сборка PyInstaller, установщик | Чистая ВМ Windows | Антивирусы на `--onefile` | ⏳ |
 

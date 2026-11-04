@@ -93,6 +93,66 @@ class AppController:
         self.dirty = True
         return result
 
+    # ----------------------------------------------------- предпросмотр
+    def preview_block(self, block: BlockType, text: str = "", heading: str = "",
+                      position: InsertPosition | None = None, clean: bool = True,
+                      options: CleanOptions | None = None):
+        return self._require().preview_block(block, text=text, heading=heading, position=position,
+                                             clean=clean, clean_options=options)
+
+    # --------------------------------------------------- титульный лист
+    def title_data(self):
+        from .title_page import TitlePageData
+
+        return self._require().title_data() or TitlePageData()
+
+    def set_title_page(self, data) -> None:
+        self._require().set_title_page(data)
+        self.dirty = True
+
+    def profile_separator(self) -> str:
+        return self._require().profile.citation_separator
+
+    # ------------------------------------------------ список литературы
+    def bib_entries(self):
+        return self._require().bibliography.entries()
+
+    def bib_citations(self):
+        return self._require().bibliography.citation_counts()
+
+    def bib_add(self, texts: list[str]):
+        added = self._require().bibliography.add(texts)
+        self.dirty = True
+        return added
+
+    def bib_update(self, key: str, text: str) -> None:
+        self._require().bibliography.update_text(key, text)
+        self.dirty = True
+
+    def bib_remove(self, key: str) -> int:
+        refs = self._require().bibliography.remove(key)
+        self.dirty = True
+        return refs
+
+    def bib_move(self, key: str, delta: int) -> None:
+        self._require().bibliography.move(key, delta)
+        self.dirty = True
+
+    def bib_sort(self, mode: str) -> None:
+        bib = self._require().bibliography
+        bib.sort_alphabetically() if mode == "alpha" else bib.sort_by_citation()
+        self.dirty = True
+
+    def bib_adopt(self) -> int:
+        """Взять под управление записи без ключей (из чужого документа). Возвращает их число."""
+        bib = self._require().bibliography
+        entries = bib.entries()
+        legacy = sum(1 for e in entries if e.key is None)
+        if legacy:
+            bib.set_entries(entries)
+            self.dirty = True
+        return legacy
+
     def save(self, path: str | Path | None = None) -> Path:
         saved = self._require().save(path)
         self.dirty = False
