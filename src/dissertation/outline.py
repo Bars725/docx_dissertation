@@ -155,6 +155,8 @@ def classify_paragraph(p_el, resolver: StyleResolver) -> OutlineItem | None:
         return OutlineItem(p_el, Kind.TITLE, 0, text, style_id)
     if role == Role.APPENDIX:
         return OutlineItem(p_el, Kind.APPENDIX, 0, text, style_id)
+    if role == Role.TOC_HEADING:
+        return OutlineItem(p_el, Kind.TOC, 0, text, style_id)
     if role == Role.STRUCTURAL:
         return OutlineItem(p_el, structural_kind(text) or Kind.OTHER_STRUCTURAL, 0, text, style_id)
     level = resolver.outline_level(p_el)
@@ -166,10 +168,25 @@ def classify_paragraph(p_el, resolver: StyleResolver) -> OutlineItem | None:
     return OutlineItem(p_el, Kind.SUBCHAPTER if level == 1 else Kind.SECTION, level, text, style_id)
 
 
+TITLE_BOOKMARK_PREFIX = "_GostTitle_"
+
+
+def is_title_table(tbl_el) -> bool:
+    """Таблица-разметка титульного листа, созданная формой (по закладкам полей)."""
+    for b in tbl_el.iter(qn("w:bookmarkStart")):
+        if (b.get(qn("w:name")) or "").startswith(TITLE_BOOKMARK_PREFIX):
+            return True
+    return False
+
+
 def build_outline(document) -> list[OutlineItem]:
     resolver = StyleResolver(document)
     items = []
     for el in ooxml.iter_body_blocks(document.element.body):
+        if el.tag == ooxml.W_TBL:
+            if is_title_table(el):
+                items.append(OutlineItem(el, Kind.TITLE, 0, "[Титульный лист]", None))
+            continue
         if el.tag != ooxml.W_P:
             continue
         item = classify_paragraph(el, resolver)

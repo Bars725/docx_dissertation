@@ -102,6 +102,7 @@ def gost_r_7_0_11_2011() -> FormattingProfile:
         structural_uppercase=True,
         bibliography_title="СПИСОК ЛИТЕРАТУРЫ",
         appendix_label="Приложение {letter}",
+        toc_title="ОГЛАВЛЕНИЕ",
     )
 
 

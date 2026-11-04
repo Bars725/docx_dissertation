@@ -98,6 +98,10 @@ class FormattingProfile:
     conclusion_title: str = "ЗАКЛЮЧЕНИЕ"
     bibliography_title: str = "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ"
     bibliography_number_format: str = "{n}. "
+    # Ссылка в тексте: [3], [3, с. 15], несколько источников — через разделитель: [3; 5]
+    citation_separator: str = "; "
+    toc_title: str = "СОДЕРЖАНИЕ"
+    toc_levels: int = 3
     appendix_label: str = "ПРИЛОЖЕНИЕ {letter}"
     # ГОСТ: без Ё, З, Й, О, Ч, Ъ, Ы, Ь
     appendix_letters: str = "АБВГДЕЖИКЛМНПРСТУФХЦШЩЭЮЯ"

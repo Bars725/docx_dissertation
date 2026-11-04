@@ -16,6 +16,7 @@ from docx.shared import Mm
 from docx.text.paragraph import Paragraph
 
 from . import ooxml
+from .bibliography import Bibliography, has_citations
 from .outline import Kind, OutlineItem, StyleResolver, build_outline
 from .profile import FormattingProfile
 from .runs import make_run, prepend_text, replace_text, set_paragraph_text, visible_text
@@ -25,6 +26,7 @@ from .text_cleaner import CleanOptions, TextCleaner
 
 class BlockType(str, Enum):
     TITLE_PAGE = "title_page"
+    TOC = "toc"
     INTRODUCTION = "introduction"
     CHAPTER = "chapter"
     SUBCHAPTER = "subchapter"
@@ -37,6 +39,7 @@ class BlockType(str, Enum):
 
 BLOCK_LABELS = {
     BlockType.TITLE_PAGE: "Титульный лист",
+    BlockType.TOC: "Оглавление (содержание)",
     BlockType.INTRODUCTION: "Введение",
     BlockType.CHAPTER: "Глава",
     BlockType.SUBCHAPTER: "Подглава (параграф)",
@@ -76,6 +79,14 @@ class InsertResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PreviewResult:
+    items: list[tuple[Role, str]] = field(default_factory=list)
+    page_breaks: list[bool] = field(default_factory=list)
+    where: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
 class SaveError(RuntimeError):
     pass
 
@@ -87,6 +98,7 @@ class DocumentBuilder:
         self.path = Path(path) if path else None
         self.styles = StyleManager(document, profile)
         self._backup_done = False
+        self._unknown_refs: list[str] = []
 
     # =========================================================== создание
     @classmethod
@@ -172,6 +184,117 @@ class DocumentBuilder:
         if anchor is not None:
             anchor.addnext(el)
 
+    @property
+    def bibliography(self) -> Bibliography:
+        return Bibliography(self)
+
+    # ======================================================= титульный лист
+    def title_data(self):
+        from .title_page import read_title_data
+
+        return read_title_data(self.document)
+
+    def set_title_page(self, data) -> InsertResult:
+        from .title_page import set_title_page
+
+        set_title_page(self, data)
+        self.renumber()
+        return InsertResult()
+
+    # ============================================================ предпросмотр
+    def preview_block(self, block: BlockType, text: str = "", heading: str = "",
+                      position: InsertPosition | None = None, clean: bool = True,
+                      clean_options: CleanOptions | None = None) -> PreviewResult:
+        """Что будет вставлено — с реальными номерами глав и источников; документ не меняется."""
+        block = BlockType(block)
+        position = position or InsertPosition()
+        cleaner = TextCleaner(clean_options or CleanOptions())
+        res = PreviewResult()
+        tmp = InsertResult()
+        if block == BlockType.TOC:
+            from .toc import toc_entries
+
+            res.items = [(Role.TOC_HEADING, self._structural_text(self.profile.toc_title))]
+            res.items += [(Role.BODY, ("    " * lvl) + t) for lvl, t in toc_entries(self)]
+            res.page_breaks = [True] + [False] * (len(res.items) - 1)
+            res.where = "после титульного листа"
+            return res
+        if block == BlockType.BIBLIOGRAPHY:
+            existing = self.bibliography.entries()
+            new = cleaner.bibliography_entries(text) if clean else [
+                ln.strip() for ln in text.split("\n") if ln.strip()]
+            fmt = self.profile.bibliography_number_format
+            fmt = fmt if "{n}" in fmt else "{n}. "
+            if self.find(Kind.BIBLIOGRAPHY) is None:
+                res.items.append((Role.STRUCTURAL, self._structural_text(self.profile.bibliography_title)))
+            res.items += [(Role.BIBLIOGRAPHY, fmt.format(n=i) + e.text)
+                          for i, e in enumerate(existing, 1)]
+            res.items += [(Role.BIBLIOGRAPHY, fmt.format(n=i) + t)
+                          for i, t in enumerate(new, len(existing) + 1)]
+            res.page_breaks = [self._role_breaks(r) for r, _ in res.items]
+            res.where = "в список литературы"
+            return res
+        plan = self._plan(block, text, heading, clean, cleaner, position, tmp)
+        res.warnings = tmp.warnings
+        if not plan:
+            return res
+        where, anchor = self._resolve_position(block, position, tmp)
+        n, m, k, apps = self._counters_before(where, anchor)
+        num = self.profile.numbering
+        bib = self.bibliography
+        for role, value in plan:
+            if num.enabled and role in (Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION):
+                fmt = {Role.CHAPTER: num.chapter, Role.SUBCHAPTER: num.subchapter,
+                       Role.SECTION: num.section}[role]
+                mt = _format_regex(fmt).match(value)
+                title = mt.group("title") if mt else value
+                nn = {Role.CHAPTER: (n + 1, 0, 0), Role.SUBCHAPTER: (max(n, 1), m + 1, 0),
+                      Role.SECTION: (max(n, 1), max(m, 1), k + 1)}[role]
+                value = fmt.format(n=nn[0], m=nn[1], k=nn[2], title=title)
+            elif role == Role.APPENDIX:
+                value = self.profile.appendix_label.format(letter=self.profile.appendix_letter(apps))
+            elif role == Role.BODY and has_citations(value):
+                value = bib.render_citations(value)
+            res.items.append((role, value))
+        res.page_breaks = [self._role_breaks(r) for r, _ in res.items]
+        res.where = self._describe_position(where, anchor)
+        return res
+
+    def _role_breaks(self, role: Role) -> bool:
+        from .style_manager import SPEC_ATTR
+
+        spec = getattr(self.profile, SPEC_ATTR.get(role, role.value))
+        return bool(spec.page_break_before)
+
+    def _counters_before(self, where: str, anchor):
+        blocks = list(ooxml.iter_body_blocks(self.document.element.body))
+        index = {id(el): i for i, el in enumerate(blocks)}
+        limit = {"end": len(blocks), "start": 0}.get(where)
+        if limit is None:
+            i = index.get(id(anchor), len(blocks))
+            limit = i if where == "before" else i + 1
+        n = m = k = apps = 0
+        for it in self.outline():
+            if index.get(id(it.element), len(blocks)) >= limit:
+                break
+            if it.kind == Kind.CHAPTER:
+                n, m, k = n + 1, 0, 0
+            elif it.kind == Kind.SUBCHAPTER:
+                m, k = m + 1, 0
+            elif it.kind == Kind.SECTION:
+                k += 1
+            elif it.kind == Kind.APPENDIX:
+                apps += 1
+        return n, m, k, apps
+
+    def _describe_position(self, where: str, anchor) -> str:
+        if where == "end":
+            return "в конец документа"
+        if where == "start":
+            return "в начало документа"
+        text = " ".join(ooxml.element_text(anchor).split())[:60] if anchor is not None else ""
+        return ("перед «" if where == "before" else "после «") + text + "»"
+
     # ================================================================ структура
     def outline(self) -> list[OutlineItem]:
         return build_outline(self.document)
@@ -200,14 +323,38 @@ class DocumentBuilder:
         cleaner = TextCleaner(clean_options or CleanOptions())
         result = InsertResult()
 
+        if block == BlockType.TOC:
+            from .toc import insert_toc
+
+            result.warnings += insert_toc(self)
+            self.renumber()
+            return result
+        if block == BlockType.BIBLIOGRAPHY:
+            entries = cleaner.bibliography_entries(text) if clean else [
+                ln.strip() for ln in text.split("\n") if ln.strip()]
+            if not entries:
+                raise ValueError("Нечего вставлять: введите записи списка литературы")
+            if self.find(Kind.BIBLIOGRAPHY) is not None and position.mode != "auto":
+                result.warnings.append("Записи добавлены в конец существующего списка литературы")
+            added = self.bibliography.add(entries)
+            keys = {e.key for e in added}
+            result.paragraphs = [Paragraph(el, self.document._body)
+                                 for el in self.bibliography._entry_paragraphs()
+                                 if self.bibliography._key_of(el) in keys]
+            return result
+
         plan = self._plan(block, text, heading, clean, cleaner, position, result)
         if not plan:
             raise ValueError("Нечего вставлять: введите текст или заголовок")
 
         where, anchor = self._resolve_position(block, position, result)
         add = self._inserter(where, anchor)
+        self._unknown_refs = []
         for role, value in plan:
             result.paragraphs.append(add(role, value))
+        if self._unknown_refs:
+            result.warnings.append("Нет в списке литературы: " + ", ".join(sorted(set(self._unknown_refs)))
+                                   + " — в тексте показано «?»")
 
         if block == BlockType.TITLE_PAGE:
             self._break_after(result.paragraphs[-1]._p)
@@ -353,7 +500,7 @@ class DocumentBuilder:
         body = self.document._body
         state = {"cursor": anchor}
         if where == "start":
-            first = ooxml.first(ooxml.iter_body_blocks(self.document.element.body))
+            first = next((c for c in self.document.element.body if c.tag != ooxml.W_SECTPR), None)
             if first is None:
                 where = "end"
             else:
@@ -368,7 +515,9 @@ class DocumentBuilder:
                 p = ooxml.new_paragraph_after(state["cursor"], body)
                 state["cursor"] = p._p
             p.style = self.styles.style_for(role)
-            if text:
+            if text and role == Role.BODY and has_citations(text):
+                p._p.extend(self.bibliography.rich_runs(text, self._unknown_refs))
+            elif text:
                 p._p.append(make_run(text))   # без прямого форматирования — только стиль
             return p
 
@@ -391,6 +540,7 @@ class DocumentBuilder:
             Paragraph(el, self.document._body).paragraph_format.page_break_before = True
 
     def _break_after(self, el) -> None:
+        """Следующий за титулом элемент — с новой страницы."""
         nxt = el.getnext()
         while nxt is not None and nxt.tag not in (ooxml.W_P, ooxml.W_TBL):
             nxt = nxt.getnext()
@@ -435,6 +585,10 @@ class DocumentBuilder:
                     set_paragraph_text(para, expected)
             idx += 1
         self._renumber_bibliography(outline)
+        self.bibliography.refresh()
+        from .toc import refresh_toc
+
+        refresh_toc(self)
 
     def _set_number_prefix(self, el, fmt: str, n: int, m: int, k: int) -> None:
         para = Paragraph(el, self.document._body)
@@ -471,6 +625,8 @@ class DocumentBuilder:
             if not text:
                 continue
             idx += 1
+            if self.bibliography._key_of(el) is not None:
+                continue   # запись с ключом — номер ставит Bibliography.refresh()
             if resolver.role_of(el) != Role.BIBLIOGRAPHY or rx is None:
                 continue
             new_prefix = fmt.format(n=idx)

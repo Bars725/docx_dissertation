@@ -41,6 +41,7 @@ class Role(str, Enum):
     BIBLIOGRAPHY = "bibliography"
     APPENDIX = "appendix_heading"
     APPENDIX_TITLE = "appendix_title"
+    TOC_HEADING = "toc_heading"
 
 
 @dataclass(frozen=True)
@@ -61,13 +62,19 @@ STYLE_DEFS: dict[Role, StyleDef] = {
     Role.BIBLIOGRAPHY: StyleDef("GostBibliography", "ГОСТ Список литературы"),
     Role.APPENDIX: StyleDef("GostAppendixHeading", "ГОСТ Приложение", outline_level=0),
     Role.APPENDIX_TITLE: StyleDef("GostAppendixTitle", "ГОСТ Заголовок приложения"),
+    # Без outlineLvl: заголовок «СОДЕРЖАНИЕ» сам в оглавление не попадает (ГОСТ 7.32).
+    Role.TOC_HEADING: StyleDef("GostTocHeading", "ГОСТ Заголовок содержания"),
 }
+
+# Профильные атрибуты для ролей, у которых нет собственного ParagraphSpec.
+SPEC_ATTR = {Role.TOC_HEADING: "structural_heading"}
 
 ROLE_BY_STYLE_ID = {d.style_id: r for r, d in STYLE_DEFS.items()}
 # LibreOffice при пересохранении меняет styleId собственных стилей (GostBody → Style5),
 # но сохраняет имя — поэтому роль ищем и по имени.
 ROLE_BY_STYLE_NAME = {d.name.lower(): r for r, d in STYLE_DEFS.items() if not d.builtin}
-HEADING_ROLES = (Role.STRUCTURAL, Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION, Role.APPENDIX)
+HEADING_ROLES = (Role.STRUCTURAL, Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION, Role.APPENDIX,
+                 Role.TOC_HEADING)
 
 
 class StyleManager:
@@ -95,7 +102,7 @@ class StyleManager:
         st = self.find_style(d.style_id, d.name)
         if st is None:
             st = self._create(role)
-            self._apply(st, getattr(self.profile, role.value), d.outline_level,
+            self._apply(st, self._spec_for(role), d.outline_level,
                         is_heading=role in HEADING_ROLES)
         return st
 
@@ -110,6 +117,35 @@ class StyleManager:
         st.unhide_when_used = False
         return st
 
+    def _spec_for(self, role: Role) -> ParagraphSpec:
+        return getattr(self.profile, SPEC_ATTR.get(role, role.value))
+
+    def ensure_toc_styles(self) -> list:
+        """Стили пунктов оглавления «toc 1..3» (встроенные имена Word) с отточием до номера."""
+        from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
+
+        body = self.profile.body
+        pg = self.profile.page
+        width_cm = (pg.width_mm - pg.margin_left_mm - pg.margin_right_mm) / 10
+        out = []
+        for level in range(1, 4):
+            name = f"toc {level}"
+            st = self.find_style(f"TOC{level}", name)
+            if st is None:
+                st = self.document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+                st.style_id = f"TOC{level}"
+                st.base_style = self.document.styles["Normal"]
+                st.unhide_when_used = True
+                spec = ParagraphSpec(font_name=body.font_name, font_size_pt=body.font_size_pt,
+                                     alignment="left", line_spacing=body.line_spacing,
+                                     first_line_indent_cm=0, left_indent_cm=0.5 * (level - 1))
+                self._apply(st, spec, None)
+                pf = st.paragraph_format
+                pf.right_indent = Cm(0)
+                pf.tab_stops.add_tab_stop(Cm(width_cm), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
+            out.append(st)
+        return out
+
     # -------------------------------------------------------------- применение
     def ensure_styles(self, overwrite: bool = False) -> None:
         """Создать недостающие стили. overwrite=True — привести существующие к профилю."""
@@ -123,7 +159,7 @@ class StyleManager:
             if created:
                 st = self._create(role)
             if created or overwrite:
-                self._apply(st, getattr(self.profile, role.value), d.outline_level,
+                self._apply(st, self._spec_for(role), d.outline_level,
                             is_heading=role in HEADING_ROLES)
                 touched.add(role)
         self._link_next_styles(touched)
