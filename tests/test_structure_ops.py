@@ -1,5 +1,6 @@
 import pytest
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from dissertation.document_builder import BlockType as B, DocumentBuilder, InsertPosition
 from dissertation.gost import gost_7_32_2017
@@ -97,7 +98,7 @@ def test_delete_bibliography_warns_about_refs(b):
     assert "См. [?]." in [p.text for p in b.document.paragraphs]
 
 
-def test_complex_body_is_read_only(b):
+def test_complex_elements_become_markers(b):
     target = el(b, "1.1.2 Проблемы")
     body_p = StructureOps(b).own_body(target)[0]
     run = OxmlElement("w:r")
@@ -105,8 +106,48 @@ def test_complex_body_is_read_only(b):
     body_p.append(run)
     ops = StructureOps(b)
     c = ops.read(target)
-    assert not c.body_editable and "рисунок" in c.reason
-    res = ops.update(target, "Проблемы ручного оформления", "Попытка переписать")
-    assert res.ok and res.warnings                      # заголовок изменён, текст защищён
-    assert "1.1.2 Проблемы ручного оформления" in heads(b)
+    assert c.body_editable and "рисунок" in c.reason
+    assert c.body.startswith("⟦#1 Рисунок")
+    # маркер оставили и дописали текст вокруг — элемент сохранён и стоит после нового абзаца
+    res = ops.update(target, "Проблемы ручного оформления", "Новый абзац.\n\n" + c.body + "\n\nХвост.")
+    assert res.ok and not res.warnings
     assert body_p.getparent() is not None
+    body_els = StructureOps(b).own_body(el(b, "1.1.2 Проблемы ручного оформления"))
+    assert [ooxml_text(e) for e in body_els] == ["Новый абзац.", "Текст Б.", "Хвост."]
+    # маркер удалили — элемент удалён, с предупреждением
+    res = ops.update(el(b, "1.1.2 Проблемы ручного оформления"), None, "Только текст.")
+    assert any("Удалены" in w for w in res.warnings)
+    assert body_p.getparent() is None
+
+
+def test_force_edit_soft_protected(b):
+    target = el(b, "1.1.2 Проблемы")
+    p = StructureOps(b).own_body(target)[0]
+    ppr = p.find(qn("w:pPr"))
+    num = OxmlElement("w:numPr")
+    ppr.append(num)                                  # «список Word»
+    ops = StructureOps(b)
+    c = ops.read(target)
+    assert c.soft_protected == 1 and c.body.startswith("⟦#1 Список")
+    forced = ops.read(target, force=True)
+    assert forced.body == "Текст Б." and forced.soft_protected == 0
+    res = ops.update(target, None, "Текст Б, исправленный.", force=True)
+    assert res.ok
+    assert StructureOps(b).read(el(b, "1.1.2 Проблемы")).body == "Текст Б, исправленный."
+
+
+def test_invisible_bookmarks_do_not_block(b):
+    target = el(b, "1.1.2 Проблемы")
+    bm = OxmlElement("w:bookmarkStart")
+    bm.set(qn("w:id"), "99")
+    bm.set(qn("w:name"), "_GoBack")
+    target.addnext(bm)                               # закладка на уровне тела (бывает после Word)
+    c = StructureOps(b).read(target)
+    assert c.body == "Текст Б." and not c.reason
+    StructureOps(b).update(target, None, "Новый.")
+    assert bm.getparent() is not None
+
+
+def ooxml_text(e):
+    from dissertation import ooxml
+    return ooxml.element_text(e)

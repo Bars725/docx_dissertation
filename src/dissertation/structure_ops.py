@@ -14,7 +14,7 @@ from docx.text.paragraph import Paragraph
 
 from . import fields, ooxml
 from .bibliography import BM_PREFIX
-from .xref import APP_PREFIX, XRef, has_refs
+from .xref import APP_PREFIX, FIG_PREFIX, XRef, has_refs
 from .outline import Kind, OutlineItem, StyleResolver
 from .runs import make_run, set_paragraph_text, visible_text
 from .style_manager import Role
@@ -28,6 +28,12 @@ KIND_RU = {Kind.CHAPTER: "глава", Kind.SUBCHAPTER: "подглава", Kind
            Kind.BIBLIOGRAPHY: "список литературы", Kind.TOC: "оглавление",
            Kind.TITLE: "титульный лист", Kind.OTHER_STRUCTURAL: "структурный элемент"}
 _REF_MARK = re.compile(r"\x01([A-Za-z][A-Za-z0-9]*)\x02")
+# Сохраняемый элемент в тексте пункта: ⟦#3 Таблица⟧, ⟦#1 Рисунок 2 – Схема⟧
+KEEP_RX = re.compile(r"⟦#(\d+)(?:\s+([^⟧]*))?⟧")
+# Эти элементы можно «изменить принудительно» (превратить в обычный текст)
+SOFT = {"список", "сноска", "поле Word"}
+_INVISIBLE = {qn("w:bookmarkStart"), qn("w:bookmarkEnd"), qn("w:proofErr"), qn("w:permStart"),
+              qn("w:permEnd"), qn("w:commentRangeStart"), qn("w:commentRangeEnd")}
 
 
 @dataclass
@@ -37,8 +43,10 @@ class SectionContent:
     heading_editable: bool = True
     body: str = ""
     body_editable: bool = True
-    reason: str = ""                     # почему текст только для чтения
+    reason: str = ""                     # пояснение (маркеры, защищённые элементы)
     paragraphs: int = 0
+    soft_protected: int = 0              # абзацы, которые можно «изменить принудительно»
+    force: bool = False
 
 
 @dataclass
@@ -127,10 +135,59 @@ class StructureOps:
         return outline, i, sibs
 
     # ========================================================= чтение
-    def read(self, element) -> SectionContent:
+    # ========================================================= группы
+    def _groups(self, element, force: bool = False) -> list[dict]:
+        """Собственный текст пункта как последовательность групп:
+        text — обычный абзац; keep — сохраняемый элемент(ы) с подписью-маркером;
+        marker — невидимые служебные элементы (закладки) — не трогаем."""
+        from .figures import Figures
+
+        resolver = StyleResolver(self.doc)
+        figs = {id(e.caption): e for e in Figures(self.b).entries()}
+        groups, skip = [], set()
+        els = self.own_body(element)
+        for idx, el in enumerate(els):
+            if id(el) in skip:
+                continue
+            if el.tag in _INVISIBLE:
+                groups.append({"kind": "marker", "els": [el]})
+                continue
+            if el.tag == ooxml.W_P and resolver.role_of(el) == Role.FIGURE:
+                nxt = els[idx + 1] if idx + 1 < len(els) else None
+                if nxt is not None and id(nxt) in figs:
+                    e = figs[id(nxt)]
+                    skip.add(id(nxt))
+                    groups.append({"kind": "keep", "els": [el, nxt], "figure": e,
+                                   "label": self.b.profile.figure_caption_format.format(
+                                       n=e.number, title=e.title)})
+                    continue
+            if el.tag == ooxml.W_P and id(el) in figs:          # подпись без рисунка
+                e = figs[id(el)]
+                groups.append({"kind": "keep", "els": [el], "figure": e,
+                               "label": self.b.profile.figure_caption_format.format(n=e.number, title=e.title)})
+                continue
+            reason = self._complex(el)
+            if reason is None or (force and reason in SOFT):
+                if el.tag == ooxml.W_P:
+                    groups.append({"kind": "text", "els": [el], "text": self._editable_text(el),
+                                   "soft": reason})
+                continue
+            preview = " ".join(ooxml.element_text(el).split())
+            label = reason.capitalize() + (f": {preview[:40]}…" if len(preview) > 40 else
+                                           (f": {preview}" if preview else ""))
+            groups.append({"kind": "keep", "els": [el], "label": label, "soft": reason in SOFT})
+        n = 0
+        for g in groups:
+            if g["kind"] == "keep":
+                n += 1
+                g["n"] = n
+        return groups
+
+    # ========================================================= чтение
+    def read(self, element, force: bool = False) -> SectionContent:
         i, outline = self._item(element)
         item = outline[i]
-        content = SectionContent(kind=item.kind)
+        content = SectionContent(kind=item.kind, force=force)
         para = Paragraph(item.element, self.doc._body) if item.element.tag == ooxml.W_P else None
         if item.kind in (Kind.CHAPTER, Kind.SUBCHAPTER, Kind.SECTION):
             content.heading = self._strip_number(item)
@@ -140,21 +197,20 @@ class StructureOps:
         else:
             content.heading = visible_text(para) if para is not None else item.text
             content.heading_editable = False
-        texts, reasons = [], []
-        for el in self.own_body(element):
-            reason = self._complex(el)
-            if reason:
-                reasons.append(reason)
-            if el.tag == ooxml.W_P:
-                t = self._editable_text(el)
-                if t.strip():
-                    texts.append(t)
-        content.body = "\n\n".join(texts)
-        content.paragraphs = len(texts)
-        if reasons:
-            content.body_editable = False
-            content.reason = "в тексте есть: " + ", ".join(sorted(set(reasons))) + \
-                             " — текст можно изменить только в Word, заголовок — здесь"
+        parts, kept = [], []
+        for g in self._groups(element, force):
+            if g["kind"] == "text" and g["text"].strip():
+                parts.append(g["text"])
+                content.paragraphs += 1
+            elif g["kind"] == "keep":
+                parts.append(f"⟦#{g['n']} {g['label']}⟧")
+                kept.append(g["label"].split(":")[0])
+                if g.get("soft"):
+                    content.soft_protected += 1
+        content.body = "\n\n".join(parts)
+        if kept:
+            content.reason = ("сложные элементы показаны маркерами ⟦#…⟧ — их можно переставлять "
+                              "или удалить строкой целиком; " + ", ".join(sorted(set(kept))).lower())
         return content
 
     def _strip_number(self, item: OutlineItem) -> str:
@@ -188,7 +244,7 @@ class StructureOps:
             return "список"
         for f in fields.iter_complex_fields(el):
             target = fields.ref_target(f.instr) or ""
-            if not target.startswith((BM_PREFIX, APP_PREFIX)):
+            if not target.startswith((BM_PREFIX, APP_PREFIX, FIG_PREFIX)):
                 return "поле Word"
         return None
 
@@ -209,8 +265,8 @@ class StructureOps:
                         target = fields.ref_target(f["instr"]) or ""
                         if target.startswith(BM_PREFIX):
                             out.append(f"\x01{target[len(BM_PREFIX):]}\x02")
-                        elif target.startswith(APP_PREFIX):
-                            out.append("{@" + target[len(APP_PREFIX):] + "}")
+                        elif target.startswith((APP_PREFIX, FIG_PREFIX)):
+                            out.append("{@" + target.split("_")[-1] + "}")
                 elif child.tag == fields.W_INSTR and stack:
                     stack[-1]["instr"] += child.text or ""
                 elif stack:
@@ -224,9 +280,27 @@ class StructureOps:
         return _REF_MARK.sub(lambda m: "@" + m.group(1), "".join(out))
 
     # ========================================================= правка
+    # ========================================================= правка
+    def _segments(self, body: str, clean: bool, cleaner) -> list:
+        """Текст из окна → [('text', абзац) | ('keep', n, подпись) | ('figure', FigureSpec)]."""
+        from .figures import FigureSpec
+
+        out, pos = [], 0
+        for m in KEEP_RX.finditer(body):
+            if m.start() > pos:
+                out += self._text_segments(body[pos:m.start()], clean, cleaner)
+            out.append(("keep", int(m.group(1)), (m.group(2) or "").strip()))
+            pos = m.end()
+        out += self._text_segments(body[pos:], clean, cleaner)
+        return [x if not isinstance(x, tuple) or x[0] != "fig" else ("figure", x[1]) for x in out]
+
+    def _text_segments(self, text: str, clean: bool, cleaner) -> list:
+        items = self.b._body_items(text, clean, cleaner)
+        return [("text", v) if r == Role.BODY else ("figure", v) for r, v in items]
+
     def update(self, element, heading: str | None, body: str | None, clean: bool = True,
-               options: CleanOptions | None = None) -> OpResult:
-        content = self.read(element)
+               options: CleanOptions | None = None, force: bool = False) -> OpResult:
+        content = self.read(element, force)
         i, outline = self._item(element)
         item = outline[i]
         cleaner = TextCleaner(options or CleanOptions())
@@ -249,31 +323,73 @@ class StructureOps:
                          Kind.SECTION: BlockType.SECTION}[item.kind]
                 set_paragraph_text(Paragraph(item.element, self.doc._body),
                                    self.b._numbered_heading(block, title))
-        if body is not None and content.body_editable:
-            paras = cleaner.to_paragraphs(body) if clean else \
-                [ln for ln in body.split("\n") if ln.strip()]
-            old = self.own_body(element)
-            anchor = self._appendix_title(item.element) if item.kind == Kind.APPENDIX else None
-            anchor = anchor if anchor is not None else self._top(item.element)
-            for el in old:
-                el.getparent().remove(el)
-            add = self.b._inserter("after", anchor)
-            self.b._unknown_refs = []
-            for t in paras:
-                add(Role.BODY, t)
-            if self.b._unknown_refs:
-                warnings.append("Нет в списке литературы: " + ", ".join(sorted(set(self.b._unknown_refs))))
-        elif body is not None and not content.body_editable and body.strip() != content.body.strip():
-            warnings.append("Текст не изменён: " + content.reason)
+        if body is not None:
+            warnings += self._replace_body(element, item, body, clean, cleaner, force)
         self.b.renumber()
         return OpResult(True, "Изменения сохранены", warnings)
 
+    def _replace_body(self, element, item, body, clean, cleaner, force) -> list[str]:
+        from .figures import Figures, insert_figure_after
+
+        groups = self._groups(element, force)
+        keeps = {g["n"]: g for g in groups if g["kind"] == "keep"}
+        segments = self._segments(body, clean, cleaner)
+        used: set[int] = set()
+        warnings = []
+        # убрать старое (кроме служебных закладок), сохраняемые элементы — отложить
+        for g in groups:
+            if g["kind"] == "marker":
+                continue
+            for el in g["els"]:
+                el.getparent().remove(el)
+        cursor = self._appendix_title(item.element) if item.kind == Kind.APPENDIX else None
+        cursor = cursor if cursor is not None else self._top(item.element)
+        style = self.b.styles.style_for(Role.BODY)
+        self.b._unknown_refs = []
+        from .xref import XRef
+
+        xr = XRef(self.b)
+        for seg in segments:
+            if seg[0] == "text":
+                p = ooxml.new_paragraph_after(cursor, self.doc._body)
+                p.style = style
+                text = seg[1]
+                if has_refs(text):
+                    p._p.extend(xr.rich_runs(text, self.b._unknown_refs))
+                else:
+                    p._p.append(make_run(text))
+                cursor = p._p
+            elif seg[0] == "figure":
+                cursor = insert_figure_after(self.b, cursor, seg[1])
+            else:
+                n, label = seg[1], seg[2]
+                g = keeps.get(n)
+                if g is None or n in used:
+                    warnings.append(f"Маркер ⟦#{n}⟧ не найден — пропущен")
+                    continue
+                used.add(n)
+                for el in g["els"]:
+                    cursor.addnext(el)
+                    cursor = el
+                fig = g.get("figure")
+                if fig is not None and label:
+                    m = re.match(r".*?\s[–—-]\s(.+)$", label)
+                    new_title = (m.group(1) if m else label).strip()
+                    if new_title and new_title != fig.title:
+                        Figures(self.b).set_title(fig.caption, new_title)
+        dropped = [g["label"].split(":")[0] for n, g in keeps.items() if n not in used]
+        if dropped:
+            warnings.append("Удалены элементы: " + ", ".join(dropped))
+        if self.b._unknown_refs:
+            warnings.append("Неизвестные ссылки: " + ", ".join(sorted(set(self.b._unknown_refs))))
+        return warnings
+
     def preview_update(self, element, heading: str, body: str, clean: bool = True,
-                       options: CleanOptions | None = None):
+                       options: CleanOptions | None = None, force: bool = False):
         """Предпросмотр правки: тот же номер пункта, новый заголовок и текст."""
         from .document_builder import PreviewResult
 
-        content = self.read(element)
+        content = self.read(element, force)
         i, outline = self._item(element)
         item = outline[i]
         cleaner = TextCleaner(options or CleanOptions())
@@ -290,14 +406,22 @@ class StructureOps:
             res.items.append((role, item.text))
             if item.kind == Kind.APPENDIX and (title or content.heading):
                 res.items.append((Role.APPENDIX_TITLE, title or content.heading))
-        if content.body_editable:
-            paras = cleaner.to_paragraphs(body) if clean else [ln for ln in body.split("\n") if ln.strip()]
-            xr = XRef(self.b)
-            paras = [xr.render(p) for p in paras]
-        else:
-            paras = [p for p in content.body.split("\n\n") if p]
-            res.warnings.append("Только для чтения: " + content.reason)
-        res.items += [(Role.BODY, p) for p in paras]
+        xr = XRef(self.b)
+        keeps = {g["n"]: g for g in self._groups(element, force) if g["kind"] == "keep"}
+        figs_done = 0
+        for seg in self._segments(body, clean, cleaner):
+            if seg[0] == "text":
+                res.items.append((Role.BODY, xr.render(seg[1])))
+            elif seg[0] == "figure":
+                res.items += self.b.figure_preview_items(seg[1], figs_done)
+                figs_done += 1
+            else:
+                g = keeps.get(seg[1])
+                res.items.append((Role.FIGURE_CAPTION if g and g.get("figure") else Role.BODY,
+                                  f"[{seg[2] or 'элемент'}]" if g else f"[⟦#{seg[1]}⟧ не найден]"))
+        if content.soft_protected and not force:
+            res.warnings.append("Списки/сноски показаны маркерами — «Изменить принудительно» "
+                                "превратит их в обычный текст")
         res.page_breaks = [self.b._role_breaks(r) for r, _ in res.items]
         return res
 

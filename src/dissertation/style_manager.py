@@ -42,6 +42,8 @@ class Role(str, Enum):
     APPENDIX = "appendix_heading"
     APPENDIX_TITLE = "appendix_title"
     TOC_HEADING = "toc_heading"
+    FIGURE = "figure"
+    FIGURE_CAPTION = "figure_caption"
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,8 @@ STYLE_DEFS: dict[Role, StyleDef] = {
     Role.APPENDIX_TITLE: StyleDef("GostAppendixTitle", "ГОСТ Заголовок приложения"),
     # Без outlineLvl: заголовок «СОДЕРЖАНИЕ» сам в оглавление не попадает (ГОСТ 7.32).
     Role.TOC_HEADING: StyleDef("GostTocHeading", "ГОСТ Заголовок содержания"),
+    Role.FIGURE: StyleDef("GostFigure", "ГОСТ Рисунок"),
+    Role.FIGURE_CAPTION: StyleDef("GostFigureCaption", "ГОСТ Подпись рисунка"),
 }
 
 # Профильные атрибуты для ролей, у которых нет собственного ParagraphSpec.

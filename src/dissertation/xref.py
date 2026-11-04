@@ -2,6 +2,7 @@
 
     [@R3]  [@R3, с. 15]  [@R1; @R4]   → [3] [3, с. 15] [1; 4]   (номер записи списка литературы)
     {@P2}                             → Б                       (буква приложения)
+    {@F3}                             → 2  (или 1.2, А.1)       (номер рисунка)
 
 Каждая ссылка — поле Word ``REF <закладка> \\h``; программа пересчитывает кэш полей,
 Word — по F9. Ключи (R3, P2) постоянные: при сортировке меняются только номера/буквы.
@@ -15,6 +16,7 @@ from .runs import make_run
 
 BIB_PREFIX = "_GostRef_"
 APP_PREFIX = "_GostApp_"
+FIG_PREFIX = "_GostFig_"
 CITE_RX = re.compile(r"\[@([^\[\]]+)\]")
 APP_RX = re.compile(r"\{@([A-Za-z][A-Za-z0-9]*)\}")
 KEY_RX = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
@@ -64,7 +66,16 @@ class XRef:
         return self.builder.bibliography.numbers()
 
     def _letters(self) -> dict[str, str]:
-        return self.builder.appendices.letters()
+        """Ключи {@…}: приложения (P…) и рисунки (F…) → буква / номер."""
+        from .figures import Figures
+
+        out = dict(self.builder.appendices.letters())
+        out.update(Figures(self.builder).numbers())
+        return out
+
+    @staticmethod
+    def _prefix(key: str) -> str:
+        return FIG_PREFIX if key.startswith("F") else APP_PREFIX
 
     def rich_runs(self, text: str, unknown: list[str] | None = None) -> list:
         numbers, letters = self._numbers(), self._letters()
@@ -88,7 +99,7 @@ class XRef:
                 letter = letters.get(payload)
                 if letter is None and unknown is not None:
                     unknown.append(payload)
-                runs += fields.field_runs(f"REF {APP_PREFIX}{payload} \\h", letter or "?")
+                runs += fields.field_runs(f"REF {self._prefix(payload)}{payload} \\h", letter or "?")
             pos = end
         if pos < len(text):
             runs.append(make_run(text[pos:]))
@@ -121,6 +132,8 @@ class XRef:
                 fields.set_field_result(f, str(n) if n else "?")
             elif target.startswith(APP_PREFIX):
                 fields.set_field_result(f, letters.get(target[len(APP_PREFIX):], "?"))
+            elif target.startswith(FIG_PREFIX):
+                fields.set_field_result(f, letters.get(target[len(FIG_PREFIX):], "?"))
 
 
 def ref_counts(document, prefix: str) -> dict[str, int]:

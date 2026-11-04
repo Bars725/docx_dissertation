@@ -89,6 +89,14 @@ class FormattingProfile:
     bibliography: ParagraphSpec = field(default_factory=ParagraphSpec)
     appendix_heading: ParagraphSpec = field(default_factory=ParagraphSpec)
     appendix_title: ParagraphSpec = field(default_factory=ParagraphSpec)
+    # Рисунок: по центру, без абзацного отступа, «держать с подписью».
+    figure: ParagraphSpec = field(default_factory=lambda: ParagraphSpec(
+        alignment="center", first_line_indent_cm=0, line_spacing=1.0, space_before_pt=12,
+        space_after_pt=6, keep_with_next=True))
+    # Подпись «Рисунок 1 – Название»: по центру под рисунком, без точки в конце.
+    figure_caption: ParagraphSpec = field(default_factory=lambda: ParagraphSpec(
+        alignment="center", first_line_indent_cm=0, line_spacing=1.5, space_after_pt=12,
+        no_hyphenation=True))
 
     numbering: HeadingNumbering = field(default_factory=HeadingNumbering)
     page_numbering: PageNumbering = field(default_factory=PageNumbering)
@@ -101,6 +109,10 @@ class FormattingProfile:
     # Ссылка в тексте: [3], [3, с. 15], несколько источников — через разделитель: [3; 5]
     citation_separator: str = "; "
     toc_title: str = "СОДЕРЖАНИЕ"
+    # ГОСТ 7.32-2017 п. 6.5: «Рисунок 1 – Детали прибора»; в приложениях — «Рисунок А.1»;
+    # нумерация сквозная (global) или в пределах раздела (chapter: «Рисунок 2.3»).
+    figure_caption_format: str = "Рисунок {n} – {title}"
+    figure_numbering: str = "global"
     toc_levels: int = 3
     appendix_label: str = "ПРИЛОЖЕНИЕ {letter}"
     # ГОСТ: без Ё, З, Й, О, Ч, Ъ, Ы, Ь

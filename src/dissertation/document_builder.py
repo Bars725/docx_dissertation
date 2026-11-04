@@ -201,8 +201,26 @@ class DocumentBuilder:
     ZONE_RANK = {Kind.TITLE: 0, Kind.TOC: 1, Kind.OTHER_STRUCTURAL: 2, Kind.INTRODUCTION: 3,
                  Kind.CHAPTER: 4, Kind.CONCLUSION: 5, Kind.BIBLIOGRAPHY: 6, Kind.APPENDIX: 7}
 
+    def _repair_toc_position(self) -> bool:
+        """Блок оглавления (sdt) должен стоять сразу после заголовка «СОДЕРЖАНИЕ».
+
+        Старые версии при вставке «после СОДЕРЖАНИЯ» ставили текст между заголовком
+        и блоком, и блок потом «уезжал» вместе с чужим разделом.
+        """
+        from .toc import find_toc_sdt
+
+        sdt = find_toc_sdt(self.document)
+        head = self.find(Kind.TOC)
+        if sdt is None or head is None:
+            return False
+        if head.element.getnext() is sdt:
+            return False
+        head.element.addnext(sdt)
+        return True
+
     def normalize_order(self) -> bool:
         """Переставить разделы верхнего уровня в порядок ГОСТ (устойчиво). True — если менялось."""
+        repaired = self._repair_toc_position()
         body = self.document.element.body
         children = [c for c in body if c.tag != ooxml.W_SECTPR]
         top = {}
@@ -224,7 +242,7 @@ class DocumentBuilder:
         groups = [g for g in groups if g[1]]
         ordered = sorted(groups, key=lambda g: g[0])          # sorted() устойчив
         if [id(g[1][0]) for g in ordered] == [id(g[1][0]) for g in groups]:
-            return False
+            return repaired
         sect = body.find(ooxml.W_SECTPR)
         for _, els in ordered:
             for el in els:
@@ -315,7 +333,12 @@ class DocumentBuilder:
         res.warnings = tmp.warnings
         n, m, k, apps = self._counters_before(where, anchor)
         num = self.profile.numbering
+        figs_before = self._figures_before(where, anchor)
         for role, value in plan:
+            if role == Role.FIGURE:
+                res.items += self.figure_preview_items(value, figs_before)
+                figs_before += 1
+                continue
             if num.enabled and role in (Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION):
                 fmt = {Role.CHAPTER: num.chapter, Role.SUBCHAPTER: num.subchapter,
                        Role.SECTION: num.section}[role]
@@ -332,6 +355,26 @@ class DocumentBuilder:
         res.page_breaks = [self._role_breaks(r) for r, _ in res.items]
         res.where = self._describe_position(where, anchor)
         return res
+
+    def figure_preview_items(self, spec, figs_before: int) -> list:
+        from .figures import clean_title
+
+        name = os.path.basename(spec.path)
+        missing = "" if os.path.isfile(spec.path) else " — ФАЙЛ НЕ НАЙДЕН"
+        caption = self.profile.figure_caption_format.format(n=figs_before + 1,
+                                                            title=clean_title(spec.title) or name)
+        return [(Role.FIGURE, f"[изображение: {name}{missing}]"), (Role.FIGURE_CAPTION, caption)]
+
+    def _figures_before(self, where: str, anchor) -> int:
+        from .figures import Figures
+
+        blocks = list(ooxml.iter_body_blocks(self.document.element.body))
+        index = {id(el): i for i, el in enumerate(blocks)}
+        limit = {"end": len(blocks), "start": 0}.get(where)
+        if limit is None:
+            i = index.get(id(anchor), len(blocks))
+            limit = i if where == "before" else i + 1
+        return sum(1 for e in Figures(self).entries() if index.get(id(e.caption), 0) < limit)
 
     def _role_breaks(self, role: Role) -> bool:
         from .style_manager import SPEC_ATTR
@@ -440,10 +483,8 @@ class DocumentBuilder:
     # --------------------------------------------------------------- план
     def _plan(self, block, text, heading, clean, cleaner, position, result):
         p = self.profile
-        if clean:
-            body = cleaner.to_paragraphs(text)
-        else:
-            body = [ln.rstrip("\r") for ln in text.split("\n") if ln.strip()]
+        body_items = self._body_items(text, clean, cleaner)
+        body = [v for r, v in body_items if r == Role.BODY]
         heading = cleaner.heading(heading) if heading.strip() else ""
 
         if block == BlockType.TITLE_PAGE:
@@ -453,7 +494,7 @@ class DocumentBuilder:
             return [(Role.TITLE, ln) for ln in lines]
 
         if block == BlockType.BODY:
-            return [(Role.BODY, t) for t in body]
+            return body_items
 
         if block in _STRUCTURAL_KIND:
             kind = _STRUCTURAL_KIND[block]
@@ -466,7 +507,7 @@ class DocumentBuilder:
                 entries = cleaner.bibliography_entries(text) if clean else body
                 items = [(role, p.bibliography_number_format.format(n=0) + e) for e in entries]
             else:
-                items = [(role, t) for t in body]
+                items = body_items
             if self.find(kind) is not None:
                 if items:
                     result.warnings.append(f"«{title}» уже есть — добавлен только текст")
@@ -477,21 +518,38 @@ class DocumentBuilder:
             if not heading:
                 if not body:
                     return []
-                heading = cleaner.heading(body.pop(0))
+                heading = cleaner.heading(body[0])
+                body_items.remove((Role.BODY, body[0]))
                 result.warnings.append("Заголовок не указан — взята первая строка текста")
             role = {BlockType.CHAPTER: Role.CHAPTER, BlockType.SUBCHAPTER: Role.SUBCHAPTER,
                     BlockType.SECTION: Role.SECTION}[block]
-            return [(role, self._numbered_heading(block, heading))] + [(Role.BODY, t) for t in body]
+            return [(role, self._numbered_heading(block, heading))] + body_items
 
         if block == BlockType.APPENDIX:
             if not heading and body:
-                heading = cleaner.heading(body.pop(0))
+                heading = cleaner.heading(body[0])
+                body_items.remove((Role.BODY, body[0]))
             label = p.appendix_label.format(letter=p.appendix_letter(0))
             items = [(Role.APPENDIX, label)]
             if heading:
                 items.append((Role.APPENDIX_TITLE, heading))
-            return items + [(Role.BODY, t) for t in body]
+            return items + body_items
         raise ValueError(f"Неизвестный тип блока: {block}")
+
+    @staticmethod
+    def _body_items(text: str, clean: bool, cleaner) -> list:
+        """Текст → [(Role.BODY, абзац) | (Role.FIGURE, FigureSpec)]; маркеры рисунков не склеиваются."""
+        from .figures import FigureSpec, split_figure_tokens
+
+        items = []
+        for seg in split_figure_tokens(text):
+            if isinstance(seg, FigureSpec):
+                items.append((Role.FIGURE, seg))
+                continue
+            paras = cleaner.to_paragraphs(seg) if clean else [
+                ln.rstrip("\r") for ln in seg.split("\n") if ln.strip()]
+            items += [(Role.BODY, t) for t in paras]
+        return items
 
     def _structural_text(self, title: str) -> str:
         if self.profile.structural_uppercase:
@@ -580,14 +638,17 @@ class DocumentBuilder:
             else:
                 where, state["cursor"] = "before", first
 
-        def add(role: Role, text: str) -> Paragraph:
-            if where == "end":
-                p = self.document.add_paragraph()
-            elif where == "before":
-                p = ooxml.new_paragraph_before(state["cursor"], body)
-            else:
-                p = ooxml.new_paragraph_after(state["cursor"], body)
-                state["cursor"] = p._p
+        def add(role: Role, text) -> Paragraph:
+            if role == Role.FIGURE:
+                from .figures import insert_figure_after
+
+                temp = place()
+                cap = insert_figure_after(self, temp._p, text)
+                if where == "after":
+                    state["cursor"] = cap
+                temp._p.getparent().remove(temp._p)
+                return Paragraph(cap, body)
+            p = place()
             p.style = self.styles.style_for(role)
             if text and role == Role.BODY and has_refs(text):
                 p._p.extend(XRef(self).rich_runs(text, self._unknown_refs))
@@ -595,7 +656,25 @@ class DocumentBuilder:
                 p._p.append(make_run(text))   # без прямого форматирования — только стиль
             return p
 
+        def place() -> Paragraph:
+            if where == "end":
+                p = self.document.add_paragraph()
+            elif where == "before":
+                p = ooxml.new_paragraph_before(state["cursor"], body)
+            else:
+                cursor = state["cursor"]
+                # после заголовка «СОДЕРЖАНИЕ» — за блоком оглавления, а не между ними
+                nxt = cursor.getnext()
+                if nxt is not None and nxt.tag == ooxml.W_SDT and self._is_toc_heading(cursor):
+                    cursor = nxt
+                p = ooxml.new_paragraph_after(cursor, body)
+                state["cursor"] = p._p
+            return p
+
         return add
+
+    def _is_toc_heading(self, el) -> bool:
+        return el.tag == ooxml.W_P and StyleResolver(self.document).role_of(el) == Role.TOC_HEADING
 
     # ---------------------------------------------------------- разрывы страниц
     def _is_title(self, el) -> bool:
@@ -649,6 +728,9 @@ class DocumentBuilder:
                 self._set_number_prefix(it.element, fmt, n, m, k)
 
         self.appendices.refresh()
+        from .figures import Figures
+
+        Figures(self).refresh()
         self._renumber_bibliography(outline)
         self.bibliography.refresh()
         XRef(self).refresh_fields()
