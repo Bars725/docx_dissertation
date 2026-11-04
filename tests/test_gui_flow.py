@@ -274,6 +274,35 @@ def test_gui_scenario(tk_env, tmp_path):
     assert ap.tree.item(ap.tree.get_children()[0], "values")[2] == "Листинг программы"
     assert "Код — в приложении А." in [p.text for p in ctl.builder.document.paragraphs]
 
+    # --- «Добавить изображение…»: папка, подпись закрепляется за файлом, маркер в тексте
+    from PIL import Image
+
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    Image.new("RGB", (800, 400), "white").save(img_dir / "arch_scheme.png")
+    Image.new("RGB", (300, 300), "white").save(img_dir / "b.jpg")
+    ctl.settings.image_folder = str(img_dir)
+    dialogs = importlib.import_module("dissertation.gui.dialogs")
+    dlg = dialogs.ImageDialog(root, ctl.settings)
+    assert len(dlg.tree.get_children()) == 2
+    assert dlg.caption_var.get() == "Arch scheme"            # подпись по умолчанию из имени
+    dlg.caption_var.set("архитектура сервиса.")
+    dlg.on_pin()
+    assert ctl.settings.caption(str(img_dir / "arch_scheme.png")) == "Архитектура сервиса"
+    dlg._ok()
+    assert dlg.result.startswith("⟦Рисунок: Архитектура сервиса | ")
+    ed.on_new_block()
+    select(B.BODY)
+    tp.text.insert("end", "Схема приведена ниже." + "\n" + dlg.result + "\n")
+    # выбрано приложение Б и «в конец выбранного раздела» → по ГОСТ «Рисунок Б.1»
+    assert "Рисунок Б.1 – Архитектура сервиса" in preview_text()
+    ed.pos_combo.current(0)                         # автоматически → основная часть
+    assert "Рисунок 1 – Архитектура сервиса" in preview_text()
+    ed.on_action()
+    texts = [p.text for p in ctl.builder.document.paragraphs]
+    assert "Рисунок 1 – Архитектура сервиса" in texts, texts
+    assert len(ctl.builder.document.inline_shapes) == 1
+
     out = ctl.save(tmp_path / "gui.docx")
     texts = [p.text for p in Document(str(out)).paragraphs]
     assert texts.index("1.1 Методы исследования") < texts.index("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")

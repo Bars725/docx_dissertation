@@ -13,6 +13,7 @@ authors = [{ name = "Bars725" }]
 dependencies = [
     "python-docx>=1.1,<2",
     "lxml>=4.9",
+    "Pillow>=9",
 ]
 
 [project.optional-dependencies]

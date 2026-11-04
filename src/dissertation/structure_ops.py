@@ -408,13 +408,16 @@ class StructureOps:
                 res.items.append((Role.APPENDIX_TITLE, title or content.heading))
         xr = XRef(self.b)
         keeps = {g["n"]: g for g in self._groups(element, force) if g["kind"] == "keep"}
-        figs_done = 0
+        from .figures import Figures
+
+        label = Figures(self.b).label_before(self._top(item.element), "after")
+        new_figs = 0
         for seg in self._segments(body, clean, cleaner):
             if seg[0] == "text":
                 res.items.append((Role.BODY, xr.render(seg[1])))
             elif seg[0] == "figure":
-                res.items += self.b.figure_preview_items(seg[1], figs_done)
-                figs_done += 1
+                new_figs += 1
+                res.items += self.b.figure_preview_items(seg[1], lambda _k, n=new_figs: label(n))
             else:
                 g = keeps.get(seg[1])
                 res.items.append((Role.FIGURE_CAPTION if g and g.get("figure") else Role.BODY,

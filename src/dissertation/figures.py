@@ -152,6 +152,24 @@ class Figures:
         return rx.sub("", text, count=1).strip()
 
     def entries(self) -> list[FigureEntry]:
+        return self._walk()[0]
+
+    def label_before(self, limit_el=None, where: str = "end") -> list:
+        """Состояние нумерации в точке вставки → функция «следующий номер» (для предпросмотра)."""
+        _, state = self._walk(stop_el=limit_el, stop_after=(where == "after"))
+        chapter, app_index, per = state
+        mode = self.profile.figure_numbering
+
+        def label(k: int) -> str:
+            n = per + k
+            if app_index >= 0:
+                return f"{self.profile.appendix_letter(app_index)}.{n}"
+            if mode == "chapter" and chapter:
+                return f"{chapter}.{n}"
+            return str(n)
+        return label
+
+    def _walk(self, stop_el=None, stop_after: bool = False):
         resolver = StyleResolver(self.document)
         out = []
         chapter = 0
@@ -159,7 +177,11 @@ class Figures:
         per = 0
         mode = self.profile.figure_numbering
         for el in ooxml.iter_body_blocks(self.document.element.body):
+            if stop_el is not None and el is stop_el and not stop_after:
+                break
             if el.tag != ooxml.W_P:
+                if stop_el is not None and el is stop_el:
+                    break
                 continue
             item = classify_paragraph(el, resolver)
             if item is not None and item.level == 0:
@@ -173,6 +195,8 @@ class Figures:
                 elif app_index >= 0:
                     app_index = -1
             if resolver.role_of(el) != Role.FIGURE_CAPTION:
+                if stop_el is not None and el is stop_el:
+                    break
                 continue
             per += 1
             if app_index >= 0:
@@ -185,7 +209,9 @@ class Figures:
             image = prev if prev is not None and prev.tag == ooxml.W_P and \
                 resolver.role_of(prev) == Role.FIGURE else None
             out.append(FigureEntry(self.key_of(el), el, image, number, self.title_of(el)))
-        return out
+            if stop_el is not None and el is stop_el:
+                break
+        return out, (chapter, app_index, per)
 
     def numbers(self) -> dict[str, str]:
         return {e.key: e.number for e in self.entries() if e.key}

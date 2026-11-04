@@ -164,16 +164,16 @@ class AppController:
 
         return StructureOps(self._require())
 
-    def section_content(self, element):
-        return self._ops().read(element)
+    def section_content(self, element, force: bool = False):
+        return self._ops().read(element, force)
 
     def preview_edit(self, element, heading: str, text: str, clean: bool = True,
-                     options: CleanOptions | None = None):
-        return self._ops().preview_update(element, heading, text, clean, options)
+                     options: CleanOptions | None = None, force: bool = False):
+        return self._ops().preview_update(element, heading, text, clean, options, force)
 
     def update_section(self, element, heading: str | None, text: str | None, clean: bool = True,
-                       options: CleanOptions | None = None):
-        res = self._ops().update(element, heading, text, clean, options)
+                       options: CleanOptions | None = None, force: bool = False):
+        res = self._ops().update(element, heading, text, clean, options, force)
         self.dirty = self.dirty or res.ok
         return res
 
@@ -206,6 +206,20 @@ class AppController:
         res = self._ops().add_element(kind, near)
         self.dirty = self.dirty or res.ok
         return res
+
+    # ------------------------------------------------------------ рисунки
+    @property
+    def settings(self):
+        from .app_settings import AppSettings
+
+        if getattr(self, "_settings", None) is None:
+            self._settings = AppSettings(self.profiles_dir.parent / "settings.json")
+        return self._settings
+
+    def fig_entries(self):
+        from .figures import Figures
+
+        return Figures(self._require()).entries()
 
     # ---------------------------------------------------------- приложения
     def app_entries(self):

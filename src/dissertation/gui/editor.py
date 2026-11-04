@@ -39,6 +39,7 @@ class EditorView:
         self._suppress_select = False
         self._selected_iid = None
         self.editing_el = None
+        self.force = False
 
         self.frame = ttk.Frame(master, padding=8)
         paned = ttk.PanedWindow(self.frame, orient="horizontal")
@@ -102,6 +103,9 @@ class EditorView:
         ttk.Label(modebar, textvariable=self.mode_var, foreground="#1a5fb4").pack(side="left")
         self.new_btn = ttk.Button(modebar, text="Новый блок (очистить поля)", command=self.on_new_block)
         self.new_btn.pack(side="right")
+        self.force_btn = ttk.Button(modebar, text="Изменить принудительно", command=self.on_force,
+                                    state="disabled")
+        self.force_btn.pack(side="right", padx=6)
 
         vpaned = ttk.PanedWindow(right, orient="vertical")
         vpaned.pack(fill="both", expand=True, pady=(6, 0))
@@ -172,6 +176,8 @@ class EditorView:
         self._update_lock_button()
         panel = self.current
         editing = self.editing_el is not None and panel is self.text_panel
+        self.force_btn.configure(state="normal" if editing and getattr(self, "_soft", 0)
+                                 and not self.force else "disabled")
         self.save_btn.configure(state="normal" if editing else "disabled")
         self.new_btn.configure(state="normal" if panel is self.text_panel else "disabled")
         if panel is not None:
@@ -243,11 +249,14 @@ class EditorView:
             self.current.select_element(el)
             self.mode_var.set(f"«{self.tree.item(iid, 'text')}» — правка в панели приложений")
         elif self.current is self.text_panel:
+            self.force = False
             content = self.ctl.section_content(el)
             self.text_panel.load_section(content)
             self._set_editing(el, self.tree.item(iid, "text"))
-            if not content.body_editable:
-                self.status("Текст пункта только для чтения: " + content.reason)
+            self._soft = content.soft_protected
+            self._update_buttons()
+            if content.reason:
+                self.status("В тексте пункта " + content.reason)
         else:
             self._set_editing(None)
             self.mode_var.set(f"«{self.tree.item(iid, 'text')}» — правка в панели ниже")
@@ -332,11 +341,32 @@ class EditorView:
         self.status(msg)
 
     @guarded
+    def on_force(self) -> None:
+        """Показать списки/сноски/поля как обычный текст (при сохранении их оформление пропадёт)."""
+        if self.editing_el is None:
+            return
+        if self.text_panel.has_changes() and not messagebox.askyesno(
+                APP_TITLE, "Несохранённые изменения будут отменены. Продолжить?", parent=self.root):
+            return
+        if not messagebox.askyesno(
+                APP_TITLE, "Списки Word, абзацы со сносками и поля в этом пункте станут обычным "
+                           "текстом: нумерация списка, сноски и поля при сохранении пропадут.\n"
+                           "Таблицы и рисунки останутся маркерами ⟦#…⟧ и сохранятся.\n\n"
+                           "Изменить принудительно?", parent=self.root):
+            return
+        self.force = True
+        self.text_panel.load_section(self.ctl.section_content(self.editing_el, force=True))
+        self._update_buttons()
+        self.mode_var.set(self.mode_var.get() + " · принудительно")
+        self.refresh_preview()
+
+    @guarded
     def on_new_block(self) -> None:
         if self.editing_el is not None and self.text_panel.has_changes() and not messagebox.askyesno(
                 APP_TITLE, "Изменения в текущем пункте не сохранены. Отменить их?", parent=self.root):
             return
         self.text_panel.clear_input()
+        self.force = False
         self._set_editing(None)
         self.refresh_preview()
 

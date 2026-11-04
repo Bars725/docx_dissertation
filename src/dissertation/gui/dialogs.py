@@ -1,6 +1,7 @@
 """Диалоговые окна."""
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -161,21 +162,18 @@ class CitationDialog(_Dialog):
         self.destroy()
 
 
-class AppendixRefDialog(_Dialog):
-    """Выбор приложения; результат — токен «{@P1}» (в документе станет буквой приложения)."""
+class RefDialog(_Dialog):
+    """Выбор цели ссылки; результат — токен (например «{@P1}» или «{@F2}»)."""
 
-    def __init__(self, master, entries):
-        super().__init__(master, "Ссылка на приложение")
-        self.entries = entries
-        ttk.Label(self.body, text="В текст вставится буква приложения, например:\n"
-                                  "«см. приложение {@P1}» → «см. приложение А». "
-                                  "При перестановке приложений буква обновится.",
-                  foreground="#555", justify="left").pack(anchor="w")
-        self.listbox = tk.Listbox(self.body, height=10, width=70, activestyle="dotbox")
+    def __init__(self, master, title: str, hint: str, items: list[tuple[str, str]]):
+        super().__init__(master, title)
+        self.items = items
+        ttk.Label(self.body, text=hint, foreground="#555", justify="left").pack(anchor="w")
+        self.listbox = tk.Listbox(self.body, height=10, width=80, activestyle="dotbox")
         self.listbox.pack(fill="both", expand=True, pady=6)
-        for e in entries:
-            self.listbox.insert("end", f"Приложение {e.letter}. {e.title}")
-        if entries:
+        for label, _ in items:
+            self.listbox.insert("end", label)
+        if items:
             self.listbox.selection_set(0)
         btns = ttk.Frame(self.body)
         btns.pack(fill="x")
@@ -187,5 +185,189 @@ class AppendixRefDialog(_Dialog):
     def _ok(self) -> None:
         sel = self.listbox.curselection()
         if sel:
-            self.result = "{@" + self.entries[sel[0]].key + "}"
+            self.result = self.items[sel[0]][1]
             self.destroy()
+
+
+class ImageDialog(_Dialog):
+    """«Добавить изображение»: папка → список изображений с подписями и предпросмотром.
+
+    Подпись закрепляется за файлом (хранится в настройках) и используется в
+    документе как «Рисунок N – <подпись>». Результат — маркер рисунка для окна ввода.
+    """
+
+    PREVIEW = 360
+
+    def __init__(self, master, settings):
+        super().__init__(master, "Добавить изображение")
+        self.resizable(True, True)
+        self.settings = settings
+        self.files: list[str] = []
+        self._iid_path: dict[str, str] = {}
+        self._photo = None
+        self._current = None
+
+        top = ttk.Frame(self.body)
+        top.pack(fill="x")
+        ttk.Label(top, text="Папка с изображениями:").pack(side="left")
+        self.folder_var = tk.StringVar(value=settings.image_folder)
+        folder_entry = ttk.Entry(top, textvariable=self.folder_var, width=60)
+        folder_entry.pack(side="left", fill="x", expand=True, padx=6)
+        folder_entry.bind("<Return>", lambda e: self.reload())
+        ttk.Button(top, text="Обзор…", command=self.on_browse).pack(side="left")
+        ttk.Button(top, text="Обновить", command=self.reload).pack(side="left", padx=(6, 0))
+
+        mid = ttk.Frame(self.body)
+        mid.pack(fill="both", expand=True, pady=8)
+        left = ttk.Frame(mid)
+        left.pack(side="left", fill="both", expand=True)
+        self.tree = ttk.Treeview(left, columns=("file", "caption"), show="headings",
+                                 selectmode="browse", height=14)
+        self.tree.heading("file", text="Файл")
+        self.tree.heading("caption", text="Подпись в документе")
+        self.tree.column("file", width=200, stretch=False)
+        self.tree.column("caption", width=320, stretch=True)
+        sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Double-1>", lambda e: self._ok())
+
+        right = ttk.Frame(mid, padding=(10, 0, 0, 0))
+        right.pack(side="left", fill="y")
+        self.preview_label = ttk.Label(right, text="Выберите изображение", anchor="center",
+                                       relief="solid", padding=4)
+        self.preview_label.pack(fill="both", expand=True)
+        self.meta_var = tk.StringVar()
+        ttk.Label(right, textvariable=self.meta_var, foreground="#555").pack(anchor="w", pady=(4, 0))
+
+        cap = ttk.Frame(self.body)
+        cap.pack(fill="x")
+        cap.columnconfigure(1, weight=1)
+        ttk.Label(cap, text="Название рисунка:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.caption_var = tk.StringVar()
+        self.caption_var.trace_add("write", lambda *_: self._update_example())
+        ttk.Entry(cap, textvariable=self.caption_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(cap, text="Закрепить подпись", command=self.on_pin).grid(row=0, column=2, padx=(6, 0))
+        ttk.Label(cap, text="Ширина, см:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        wrow = ttk.Frame(cap)
+        wrow.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        self.width_var = tk.StringVar()
+        ttk.Entry(wrow, textvariable=self.width_var, width=7).pack(side="left")
+        ttk.Label(wrow, text="пусто — автоматически (не шире полей и не выше 2/3 страницы)",
+                  foreground="#777").pack(side="left", padx=6)
+        self.example_var = tk.StringVar()
+        ttk.Label(cap, textvariable=self.example_var, foreground="#1a5fb4").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        btns = ttk.Frame(self.body)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="Вставить", command=self._ok).pack(side="right", padx=6)
+        self.geometry("980x640")
+        self.reload()
+        self.run()
+
+    # ------------------------------------------------------------------ папка
+    def on_browse(self) -> None:
+        path = filedialog.askdirectory(parent=self, title="Папка с изображениями",
+                                       initialdir=self.folder_var.get() or None)
+        if path:
+            self.folder_var.set(path)
+            self.reload()
+
+    def reload(self) -> None:
+        from ..app_settings import list_images
+
+        folder = self.folder_var.get().strip()
+        self.tree.delete(*self.tree.get_children())
+        self._iid_path.clear()
+        self.files = list_images(folder) if folder else []
+        if folder:
+            self.settings.image_folder = folder
+        for path in self.files:
+            iid = self.tree.insert("", "end", values=(os.path.basename(path), self._caption(path)))
+            self._iid_path[iid] = path
+        self.meta_var.set(f"Изображений: {len(self.files)}" if folder else "Укажите папку")
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self._on_select()
+
+    def _caption(self, path: str) -> str:
+        from ..app_settings import default_title
+
+        return self.settings.caption(path) or default_title(path)
+
+    # ------------------------------------------------------------- выбор
+    def _on_select(self, _event=None) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = self._iid_path.get(sel[0])
+        if path is None or path == self._current:
+            return
+        self._current = path
+        self.caption_var.set(self._caption(path))
+        self._show_preview(path)
+
+    def _show_preview(self, path: str) -> None:
+        self._photo = None
+        meta = os.path.basename(path)
+        try:
+            try:
+                from PIL import Image, ImageTk
+
+                with Image.open(path) as im:
+                    meta += f" · {im.width}×{im.height} px"
+                    im = im.copy()
+                    im.thumbnail((self.PREVIEW, self.PREVIEW))
+                    self._photo = ImageTk.PhotoImage(im, master=self)
+            except ImportError:
+                if path.lower().endswith((".png", ".gif")):
+                    photo = tk.PhotoImage(master=self, file=path)
+                    factor = max(1, -(-max(photo.width(), photo.height()) // self.PREVIEW))
+                    self._photo = photo.subsample(factor)
+                else:
+                    meta += " · предпросмотр JPG/BMP/TIFF — установите Pillow"
+        except Exception as exc:  # noqa: BLE001
+            meta += f" · не удалось открыть: {exc}"
+        if self._photo is not None:
+            self.preview_label.configure(image=self._photo, text="")
+        else:
+            self.preview_label.configure(image="", text="Нет предпросмотра")
+        self.meta_var.set(meta)
+
+    def _update_example(self) -> None:
+        from ..figures import clean_title
+
+        title = clean_title(self.caption_var.get()) or "…"
+        self.example_var.set(f"В документе: по центру рисунок, под ним — «Рисунок N – {title}»")
+
+    # -------------------------------------------------------------- действия
+    def on_pin(self) -> None:
+        if not self._current:
+            return
+        self.settings.set_caption(self._current, self.caption_var.get())
+        for iid, path in self._iid_path.items():
+            if path == self._current:
+                self.tree.item(iid, values=(os.path.basename(path), self._caption(path)))
+
+    def _ok(self) -> None:
+        from ..figures import FigureSpec, clean_title
+
+        if not self._current:
+            return
+        title = clean_title(self.caption_var.get()) or self._caption(self._current)
+        width = None
+        raw = self.width_var.get().strip().replace(",", ".")
+        if raw:
+            try:
+                width = float(raw)
+            except ValueError:
+                messagebox.showerror(APP_TITLE, "Ширина — число сантиметров, например 12", parent=self)
+                return
+        self.settings.set_caption(self._current, title)       # подпись закрепляется за файлом
+        self.result = FigureSpec(self._current, title, width).token()
+        self.destroy()

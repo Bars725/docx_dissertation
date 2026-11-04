@@ -78,6 +78,9 @@ class TextPanel(_Panel):
         ttk.Button(hint, text="Ссылка на источник…", command=self.on_cite).pack(side="right")
         ttk.Button(hint, text="Ссылка на приложение…", command=self.on_cite_appendix).pack(
             side="right", padx=4)
+        ttk.Button(hint, text="Ссылка на рисунок…", command=self.on_cite_figure).pack(side="right")
+        ttk.Button(hint, text="Добавить изображение…", command=self.on_add_image).pack(
+            side="right", padx=4)
 
         box, self.text = scrolled_text(f, wrap="word", undo=True, font=MONO_FONT, height=8,
                                        relief="solid", borderwidth=1)
@@ -154,7 +157,7 @@ class TextPanel(_Panel):
     def save_edit(self, element) -> str:
         h, t = self._values()
         res = self.ctl.update_section(element, h, t, clean=self.clean_var.get(),
-                                      options=self._clean_options())
+                                      options=self._clean_options(), force=self.editor.force)
         if not res.ok:
             raise ValueError(res.message)
         self._snapshot = self._values()
@@ -165,7 +168,7 @@ class TextPanel(_Panel):
         if el is not None:
             h, t = self._values()
             res = self.ctl.preview_edit(el, h, t, clean=self.clean_var.get(),
-                                        options=self._clean_options())
+                                        options=self._clean_options(), force=self.editor.force)
         else:
             res = self.ctl.preview_block(self.block, **self._args())
         self.editor.preview.show_result(res)
@@ -187,24 +190,53 @@ class TextPanel(_Panel):
                                 "«Список литературы».", parent=self.root)
             return
         dlg = CitationDialog(self.root, entries, self.ctl.profile_separator())
-        if dlg.result:
-            self.text.insert("insert", dlg.result)
-            self.text.focus_set()
+        self._insert_token(dlg.result)
 
 
     @guarded
     def on_cite_appendix(self) -> None:
-        from .dialogs import AppendixRefDialog
+        from .dialogs import RefDialog
 
         entries = [e for e in self.ctl.app_entries() if e.key]
         if not entries:
             messagebox.showinfo(APP_TITLE, "Приложений пока нет. Добавьте их: тип блока «Приложение».",
                                 parent=self.root)
             return
-        dlg = AppendixRefDialog(self.root, entries)
-        if dlg.result:
-            self.text.insert("insert", dlg.result)
-            self.text.focus_set()
+        dlg = RefDialog(self.root, "Ссылка на приложение",
+                        "В текст вставится буква приложения: «см. приложение {@P1}» → «см. приложение А».\n"
+                        "При перестановке приложений буква обновится.",
+                        [(f"Приложение {e.letter}. {e.title}", "{@" + e.key + "}") for e in entries])
+        self._insert_token(dlg.result)
+
+    def _insert_token(self, token, own_line: bool = False) -> None:
+        if not token:
+            return
+        if str(self.text.cget("state")) == "disabled":
+            raise ValueError("Текст пункта сейчас только для чтения")
+        self.text.insert("insert", f"\n{token}\n" if own_line else token)
+        self.text.focus_set()
+
+    @guarded
+    def on_cite_figure(self) -> None:
+        from .dialogs import RefDialog
+
+        entries = [e for e in self.ctl.fig_entries() if e.key]
+        if not entries:
+            messagebox.showinfo(APP_TITLE, "Рисунков в документе пока нет — сначала «Добавить "
+                                "изображение…» и сохраните текст.", parent=self.root)
+            return
+        dlg = RefDialog(self.root, "Ссылка на рисунок",
+                        "В текст вставится номер рисунка: «на рисунке {@F1}» → «на рисунке 1».\n"
+                        "При добавлении и перестановке рисунков номер обновится.",
+                        [(f"Рисунок {e.number} – {e.title}", "{@" + e.key + "}") for e in entries])
+        self._insert_token(dlg.result)
+
+    @guarded
+    def on_add_image(self) -> None:
+        from .dialogs import ImageDialog
+
+        dlg = ImageDialog(self.root, self.ctl.settings)
+        self._insert_token(dlg.result, own_line=True)
 
 
 # =========================================================== титульный лист

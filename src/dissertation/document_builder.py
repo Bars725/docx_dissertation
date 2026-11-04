@@ -333,11 +333,14 @@ class DocumentBuilder:
         res.warnings = tmp.warnings
         n, m, k, apps = self._counters_before(where, anchor)
         num = self.profile.numbering
-        figs_before = self._figures_before(where, anchor)
+        from .figures import Figures
+
+        label = Figures(self).label_before(anchor if where in ("before", "after") else None, where)
+        new_figs = 0
         for role, value in plan:
             if role == Role.FIGURE:
-                res.items += self.figure_preview_items(value, figs_before)
-                figs_before += 1
+                new_figs += 1
+                res.items += self.figure_preview_items(value, lambda _k, n=new_figs: label(n))
                 continue
             if num.enabled and role in (Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION):
                 fmt = {Role.CHAPTER: num.chapter, Role.SUBCHAPTER: num.subchapter,
@@ -356,12 +359,14 @@ class DocumentBuilder:
         res.where = self._describe_position(where, anchor)
         return res
 
-    def figure_preview_items(self, spec, figs_before: int) -> list:
+    def figure_preview_items(self, spec, figs_before) -> list:
+        """figs_before: число рисунков до точки вставки или функция k → номер (k-й новый рисунок)."""
         from .figures import clean_title
 
         name = os.path.basename(spec.path)
         missing = "" if os.path.isfile(spec.path) else " — ФАЙЛ НЕ НАЙДЕН"
-        caption = self.profile.figure_caption_format.format(n=figs_before + 1,
+        number = figs_before(1) if callable(figs_before) else figs_before + 1
+        caption = self.profile.figure_caption_format.format(n=number,
                                                             title=clean_title(spec.title) or name)
         return [(Role.FIGURE, f"[изображение: {name}{missing}]"), (Role.FIGURE_CAPTION, caption)]
 

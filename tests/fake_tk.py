@@ -84,6 +84,10 @@ class Menu(_Widget):
     pass
 
 
+class PhotoImage(_Widget):
+    pass
+
+
 class Canvas(_Widget):
     def bbox(self, *a):
         return (0, 0, 0, 0)
@@ -287,8 +291,11 @@ class Treeview(_Widget):
     def selection_remove(self, *iids):
         self._sel = tuple(i for i in self._sel if i not in iids)
 
-    def item(self, iid, option=None):
+    def item(self, iid, option=None, **kw):
         row = self.rows[iid]
+        if kw:
+            row.update({k: tuple(v) if k == "values" else v for k, v in kw.items()})
+            return None
         return row[option] if option else row
 
     def select(self, iid):
@@ -299,7 +306,8 @@ class Treeview(_Widget):
 def build_modules():
     """(tkinter, ttk, filedialog, messagebox) — модули-заглушки."""
     tk = types.ModuleType("tkinter")
-    for name in ("Tk", "Toplevel", "Menu", "Canvas", "Listbox", "Text", "StringVar", "BooleanVar"):
+    for name in ("Tk", "Toplevel", "Menu", "Canvas", "Listbox", "Text", "StringVar", "BooleanVar",
+                 "PhotoImage"):
         setattr(tk, name, globals()[name])
     tk.TclError = TclError
     tk.Misc = _Widget
@@ -310,6 +318,7 @@ def build_modules():
     fd = types.ModuleType("tkinter.filedialog")
     fd.askopenfilename = lambda **k: ""
     fd.asksaveasfilename = lambda **k: ""
+    fd.askdirectory = lambda **k: ""
     mb = types.ModuleType("tkinter.messagebox")
     mb.log = []
 

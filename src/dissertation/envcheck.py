@@ -86,6 +86,10 @@ def check_environment(need_gui: bool = True) -> list[Problem]:
                "Linux: sudo apt install python3-tk; macOS: brew install python-tk")
         problems.append(Problem("error" if need_gui else "warning",
                                 "Нет tkinter — графический интерфейс недоступен", fix))
+    if importlib.util.find_spec("PIL") is None:
+        problems.append(Problem("warning", "Не установлен Pillow — предпросмотр JPG/BMP/TIFF в окне "
+                                           "изображений недоступен (PNG/GIF работают)",
+                                _pip("install Pillow")))
     if importlib.util.find_spec("pytest") is None:
         problems.append(Problem("info", "pytest не установлен (нужен только для тестов)",
                                 _pip("install -r requirements-dev.txt")))

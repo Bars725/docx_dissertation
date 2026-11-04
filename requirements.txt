@@ -1,4 +1,6 @@
 # Нужно для работы программы
 python-docx>=1.1,<2
 lxml>=4.9
+# предпросмотр JPG/BMP/TIFF в окне «Добавить изображение» (без него — только PNG/GIF)
+Pillow>=9
 # tkinter входит в установщик Python (Windows: компонент «tcl/tk and IDLE»)
