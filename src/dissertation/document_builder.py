@@ -19,7 +19,7 @@ from . import ooxml
 from .outline import Kind, OutlineItem, StyleResolver, build_outline
 from .profile import FormattingProfile
 from .runs import make_run, prepend_text, replace_text, set_paragraph_text, visible_text
-from .style_manager import ALIGN_MAP, STYLE_DEFS, Role, StyleManager
+from .style_manager import ALIGN_MAP, Role, StyleManager
 from .text_cleaner import CleanOptions, TextCleaner
 
 
@@ -376,7 +376,7 @@ class DocumentBuilder:
 
     # ---------------------------------------------------------- разрывы страниц
     def _is_title(self, el) -> bool:
-        return StyleResolver(self.document).style_id_of(el) == STYLE_DEFS[Role.TITLE].style_id
+        return StyleResolver(self.document).role_of(el) == Role.TITLE
 
     def _has_break_before(self, el) -> bool:
         resolver = StyleResolver(self.document)
@@ -423,12 +423,12 @@ class DocumentBuilder:
                     continue
                 self._set_number_prefix(it.element, fmt, n, m, k)
 
-        appendix_id = STYLE_DEFS[Role.APPENDIX].style_id
+        resolver = StyleResolver(self.document)
         idx = 0
         for it in outline:
             if it.kind != Kind.APPENDIX:
                 continue
-            if it.style_id == appendix_id:
+            if resolver.role_of(it.element) == Role.APPENDIX:
                 expected = self.profile.appendix_label.format(letter=self.profile.appendix_letter(idx))
                 para = Paragraph(it.element, self.document._body)
                 if visible_text(para).strip() != expected:
@@ -453,7 +453,6 @@ class DocumentBuilder:
             return
         fmt = self.profile.bibliography_number_format
         rx = _format_regex(fmt.rstrip() + " {title}") if "{n}" in fmt else None
-        bib_id = STYLE_DEFS[Role.BIBLIOGRAPHY].style_id
         resolver = StyleResolver(self.document)
         from .outline import classify_paragraph
 
@@ -472,7 +471,7 @@ class DocumentBuilder:
             if not text:
                 continue
             idx += 1
-            if resolver.style_id_of(el) != bib_id or rx is None:
+            if resolver.role_of(el) != Role.BIBLIOGRAPHY or rx is None:
                 continue
             new_prefix = fmt.format(n=idx)
             match = rx.match(text)

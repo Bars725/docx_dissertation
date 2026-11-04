@@ -22,7 +22,10 @@ BIB_NUMBER = re.compile(r"^\s*(?:\[\d+\]|\d+\s*[.)])\s*")
 
 @dataclass
 class CleanOptions:
-    paragraph_mode: str = "auto"       # auto | blank_line | line
+    # auto: есть пустые строки — блоки по ним, внутри блока умная склейка; нет — умная склейка;
+    # blank_line: абзац = блок между пустыми строками (все строки склеиваются);
+    # line: каждая строка — абзац.
+    paragraph_mode: str = "auto"
     join_hyphenation: bool = True
     collapse_spaces: bool = True
     fix_punctuation_spaces: bool = True
@@ -43,8 +46,7 @@ class TextCleaner:
             lines = [ln for ln in lines if not re.fullmatch(r"\s*[-–]?\s*\d{1,4}\s*[-–]?\s*", ln)]
         mode = self.options.paragraph_mode
         if mode == "auto":
-            has_blank = any(not ln.strip() for ln in lines[1:-1]) and len(lines) > 2
-            mode = "blank_line" if has_blank else "smart"
+            mode = "smart"   # пустые строки в smart тоже разделяют абзацы
         if mode == "line":
             paras = [ln for ln in lines if ln.strip()]
         elif mode == "blank_line":
@@ -59,6 +61,9 @@ class TextCleaner:
             paras, buf = [], []
             for ln in lines:
                 if not ln.strip():
+                    if buf:
+                        paras.append(self._join(buf))
+                        buf = []
                     continue
                 if buf and not self._wrap_continues(buf[-1], ln):
                     paras.append(self._join(buf))

@@ -14,7 +14,7 @@ from docx.text.paragraph import Paragraph
 
 from . import ooxml
 from .runs import visible_text
-from .style_manager import ROLE_BY_STYLE_ID, Role
+from .style_manager import ROLE_BY_STYLE_ID, ROLE_BY_STYLE_NAME, Role
 
 
 class Kind(str, Enum):
@@ -74,6 +74,13 @@ class StyleResolver:
         self.styles_el = document.styles.element
         self._by_id = {s.get(qn("w:styleId")): s for s in self.styles_el.findall(qn("w:style"))}
         self._default_para = None
+        self._roles: dict[str, Role] = {}
+        for sid, st in self._by_id.items():
+            name_el = st.find(qn("w:name"))
+            name = (name_el.get(qn("w:val")) if name_el is not None else "").lower()
+            role = ROLE_BY_STYLE_ID.get(sid) or ROLE_BY_STYLE_NAME.get(name)
+            if role is not None and (role not in self._roles.values() or sid in ROLE_BY_STYLE_ID):
+                self._roles[sid] = role
         for s in self.styles_el.findall(qn("w:style")):
             if s.get(qn("w:type")) == "paragraph" and s.get(qn("w:default")) in ("1", "true"):
                 self._default_para = s.get(qn("w:styleId"))
@@ -85,6 +92,10 @@ class StyleResolver:
             if ps is not None:
                 return ps.get(qn("w:val"))
         return self._default_para
+
+    def role_of(self, p_el) -> Role | None:
+        """Роль абзаца по нашему стилю (styleId или имя), иначе None."""
+        return self._roles.get(self.style_id_of(p_el) or "")
 
     def style_chain(self, style_id: str | None) -> list:
         chain, seen = [], set()
@@ -139,7 +150,7 @@ class StyleResolver:
 def classify_paragraph(p_el, resolver: StyleResolver) -> OutlineItem | None:
     style_id = resolver.style_id_of(p_el)
     text = " ".join(ooxml.element_text(p_el).split())
-    role = ROLE_BY_STYLE_ID.get(style_id or "")
+    role = resolver.role_of(p_el)
     if role == Role.TITLE:
         return OutlineItem(p_el, Kind.TITLE, 0, text, style_id)
     if role == Role.APPENDIX:

@@ -64,6 +64,9 @@ STYLE_DEFS: dict[Role, StyleDef] = {
 }
 
 ROLE_BY_STYLE_ID = {d.style_id: r for r, d in STYLE_DEFS.items()}
+# LibreOffice при пересохранении меняет styleId собственных стилей (GostBody → Style5),
+# но сохраняет имя — поэтому роль ищем и по имени.
+ROLE_BY_STYLE_NAME = {d.name.lower(): r for r, d in STYLE_DEFS.items() if not d.builtin}
 HEADING_ROLES = (Role.STRUCTURAL, Role.CHAPTER, Role.SUBCHAPTER, Role.SECTION, Role.APPENDIX)
 
 
@@ -78,6 +81,9 @@ class StyleManager:
             if style_id and st.style_id == style_id:
                 return st
         if name:
+            for st in self.document.styles:
+                if st.name and st.name.lower() == name.lower():
+                    return st
             try:
                 return self.document.styles[name]
             except KeyError:
@@ -109,6 +115,7 @@ class StyleManager:
         """Создать недостающие стили. overwrite=True — привести существующие к профилю."""
         if overwrite:
             self.apply_document_defaults()
+        touched: set[Role] = set()
         for role in Role:
             d = STYLE_DEFS[role]
             st = self.find_style(d.style_id, d.name)
@@ -118,7 +125,8 @@ class StyleManager:
             if created or overwrite:
                 self._apply(st, getattr(self.profile, role.value), d.outline_level,
                             is_heading=role in HEADING_ROLES)
-        self._link_next_styles()
+                touched.add(role)
+        self._link_next_styles(touched)
         if overwrite:
             self._apply_aux_styles()
 
@@ -171,18 +179,22 @@ class StyleManager:
             ooxml.set_size(rpr, body.font_size_pt)
             ooxml.set_black_color(rpr)
 
-    def _link_next_styles(self) -> None:
-        """После Enter в заголовке Word продолжит «ГОСТ Основной текст»."""
-        body = self.find_style(STYLE_DEFS[Role.BODY].style_id)
-        for role in HEADING_ROLES + (Role.APPENDIX_TITLE,):
+    def _link_next_styles(self, roles: set[Role]) -> None:
+        """После Enter в заголовке Word продолжит «ГОСТ Основной текст».
+
+        Только для стилей, созданных/обновлённых сейчас: чужие стили не трогаем.
+        """
+        bd = STYLE_DEFS[Role.BODY]
+        body = self.find_style(bd.style_id, bd.name)
+        for role in roles:
             d = STYLE_DEFS[role]
             st = self.find_style(d.style_id, d.name)
-            if st is not None and body is not None:
-                st.next_paragraph_style = body
-        for role in (Role.BODY, Role.BIBLIOGRAPHY, Role.TITLE):
-            st = self.find_style(STYLE_DEFS[role].style_id)
-            if st is not None:
+            if st is None:
+                continue
+            if role in (Role.BODY, Role.BIBLIOGRAPHY, Role.TITLE):
                 st.next_paragraph_style = st
+            elif body is not None:
+                st.next_paragraph_style = body
 
     def _apply(self, style, spec: ParagraphSpec, outline_level: int | None,
                is_heading: bool = False) -> None:
