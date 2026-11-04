@@ -18,3 +18,7 @@ venv/
 
 # Локальные выходные файлы
 out/
+
+# Пакеты обновлений (git bundle)
+/_claude_update/
+*.bundle
