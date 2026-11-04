@@ -31,6 +31,7 @@
 | `install.bat dev` | плюс pytest и PyInstaller |
 | `run.bat` | запуск программы (при первом запуске сам вызовет установку); `run.bat --check`, `run.bat inspect образец.docx` |
 | `test.bat` | автотесты |
+| `push.bat` | применить пакет обновления из `_claude_update`, при необходимости закоммитить правки и отправить на GitHub (`git push`) с подтверждением |
 
 ## Ошибка `ModuleNotFoundError: No module named 'exceptions'`
 
