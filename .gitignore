@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+
+# Временные и резервные файлы сохранения
+*.~tmp.docx
+*.bak.docx
+~$*.docx
+
+# Локальные выходные файлы
+out/

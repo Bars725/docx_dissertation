@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dissertation-docx"
+version = "0.1.0"
+description = "Оформление диссертации в .docx по ГОСТ: шаблоны оформления, вставка сырого текста, сборка документа"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Bars725" }]
+dependencies = [
+    "python-docx>=1.1,<2",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+build = ["pyinstaller>=6"]
+
+[project.scripts]
+dissertation-docx = "dissertation.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "libreoffice: тесты, требующие установленного LibreOffice (soffice)",
+]
