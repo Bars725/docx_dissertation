@@ -12,17 +12,15 @@
   в Word или LibreOffice, а оглавление и навигация работают.
 * Номера глав, подглав, источников и буквы приложений пересчитываются автоматически.
 
-## Запуск
+## Установка и запуск (Windows)
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate            # Windows   (Linux/macOS: source .venv/bin/activate)
-pip install -e .[dev]
-python -m dissertation            # GUI (или без установки: python run_app.py)
-```
+1. Python 3.10+ с python.org — с галочками «Add python.exe to PATH» и «tcl/tk and IDLE».
+2. `install.bat` — создаст окружение `.venv` и поставит зависимости.
+3. `run.bat` — запуск. `run.bat --check` — проверка, всего ли хватает.
 
-Tkinter входит в стандартный установщик Python для Windows и macOS. На Linux нужен
-пакет `python3-tk`.
+Подробности, таблица зависимостей и решение ошибки
+`No module named 'exceptions'` (конфликт со старым пакетом `docx`) — в
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Командная строка
 
@@ -39,12 +37,13 @@ python -m dissertation add диссертация.docx --type chapter --heading 
 ## Сборка .exe
 
 ```bash
-pip install -e .[build]
+pip install -r requirements-dev.txt
 pyinstaller --onefile --windowed --name DissertationDocx --paths src run_app.py
 ```
 
 ## Документация
 
+* [docs/INSTALL.md](docs/INSTALL.md) — установка, зависимости, частые ошибки.
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура, выбор библиотек, рискованные места, план, рекомендации по стабильности python-docx.
 * [docs/TESTING.md](docs/TESTING.md) — автотесты, матрица Word / LibreOffice / Google Docs, ручной чек-лист.
 

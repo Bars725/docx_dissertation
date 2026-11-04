@@ -1,0 +1,6 @@
+# Для разработки: тесты и сборка .exe
+-r requirements.txt
+pytest>=7
+pyinstaller>=6
+# Необязательно: LibreOffice (soffice) — для тестов совместимости, ставится отдельно
+# https://www.libreoffice.org/download/
