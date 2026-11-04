@@ -50,6 +50,24 @@ def tk_env(request, monkeypatch):
     _purge_gui_modules()
 
 
+def test_entry_paste_on_russian_layout(monkeypatch):
+    """Ctrl+V в однострочном поле при русской раскладке (keysym кириллический, VK=86)."""
+    tk, ttk, fd, mb = fake_tk.build_modules()
+    for name, mod in (("tkinter", tk), ("tkinter.ttk", ttk), ("tkinter.filedialog", fd),
+                      ("tkinter.messagebox", mb)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    _purge_gui_modules()
+    common = importlib.import_module("dissertation.gui.common")
+    monkeypatch.setattr(common, "IS_WIN", True)
+    entry = ttk.Entry(None, clipboard="Заголовок\r\nиз буфера")
+    event = type("E", (), {"keysym": "Cyrillic_em", "keycode": 86, "widget": entry})()
+    assert common._entry_ctrl(event) == "break"
+    assert entry.value == "Заголовок из буфера"
+    latin = type("E", (), {"keysym": "v", "keycode": 86, "widget": entry})()
+    assert common._entry_ctrl(latin) is None      # на латинице — штатная вставка Tk
+    _purge_gui_modules()
+
+
 def _find_iid(tree, text, parent=""):
     for iid in tree.get_children(parent):
         if tree.item(iid, "text") == text:
@@ -139,7 +157,48 @@ def test_gui_scenario(tk_env, tmp_path):
     assert "1.1 Методы" in preview_text()
     ed.on_action()
 
+    # --- выбор пункта показывает его содержимое; правка и сохранение
+    iid = _find_iid(ed.tree, "1.1 Методы")
+    ed.tree.selection_set(iid)
+    ed._on_tree_select()
+    assert ed.block() == B.SUBCHAPTER and ed.editing_el is not None
+    assert tp.heading_var.get() == "Методы"
+    assert tp.text.get("1.0", "end-1c") == "Текст подглавы."
+    tp.heading_var.set("Методы исследования")
+    tp.text.delete("1.0", "end")
+    tp.text.insert("end", "Новый текст подглавы со ссылкой [@R1].")
+    assert "1.1 Методы исследования" in preview_text()
+    assert "вместо текущего содержимого" in ed.preview.header.get()
+    ed.on_save_edit()
+    texts = [p.text for p in ctl.builder.document.paragraphs]
+    assert "1.1 Методы исследования" in texts and "Новый текст подглавы со ссылкой [2]." in texts  # R1 после сортировки — второй
+
+    # --- «Новый блок» + вставка ещё одной подглавы, перемещение и удаление
+    ed.on_new_block()
+    assert ed.editing_el is None and tp.heading_var.get() == ""
+    ed.pos_combo.current(3)                 # в конец выбранного раздела
+    iid = _find_iid(ed.tree, "1 Обзор литературы")
+    ed.tree.selection_set(iid)
+    ed._on_tree_select()                    # загрузилась глава
+    ed.on_new_block()
+    ed.block_combo.current(ed._blocks.index(B.SUBCHAPTER))
+    ed._on_block_change(user=True)
+    tp.heading_var.set("Результаты")
+    tp.text.insert("end", "Текст результатов.")
+    ed.on_action()
+    iid = _find_iid(ed.tree, "1.2 Результаты")
+    assert iid
+    ed.tree.selection_set(iid)
+    ed._on_tree_select()
+    ed.on_move(-1)
+    assert _find_iid(ed.tree, "1.1 Результаты") and _find_iid(ed.tree, "1.2 Методы исследования")
+    ed.on_move(-1)                          # выше некуда — сообщение, без ошибки
+    assert "некуда" in ed.status_var.get()
+    ed.on_delete()
+    assert not _find_iid(ed.tree, "1.1 Результаты")
+    assert _find_iid(ed.tree, "1.1 Методы исследования")
+
     out = ctl.save(tmp_path / "gui.docx")
     texts = [p.text for p in Document(str(out)).paragraphs]
-    assert texts.index("1.1 Методы") < texts.index("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")
+    assert texts.index("1.1 Методы исследования") < texts.index("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")
     assert not errors, errors

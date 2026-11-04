@@ -36,11 +36,16 @@ class _Panel:
         self.root = editor.root
         self.frame = ttk.Frame(editor.input_host)
 
+    supports_edit = False
+
     def changed(self, *_):
         self.editor.schedule_preview()
 
     def on_shown(self) -> None:
         pass
+
+    def has_input(self) -> bool:
+        return False
 
 
 # ============================================================ обычный текст
@@ -48,10 +53,13 @@ class TextPanel(_Panel):
     """Введение, главы, подглавы, пункты, продолжение текста, заключение, приложения."""
 
     uses_position = True
+    supports_edit = True
 
     def __init__(self, editor):
         super().__init__(editor)
         self.block = BlockType.CHAPTER
+        self._snapshot = ("", "")
+        self._heading_allowed = True
         f = self.frame
         top = ttk.Frame(f)
         top.pack(fill="x")
@@ -92,8 +100,8 @@ class TextPanel(_Panel):
 
     def set_block(self, block: BlockType) -> None:
         self.block = block
-        has_heading = block in BLOCKS_WITH_HEADING
-        self.heading_entry.configure(state="normal" if has_heading else "disabled")
+        self._heading_allowed = block in BLOCKS_WITH_HEADING
+        self.heading_entry.configure(state="normal" if self._heading_allowed else "disabled")
         self.heading_label.configure(
             text="Заголовок приложения:" if block == BlockType.APPENDIX else "Заголовок:")
 
@@ -106,13 +114,63 @@ class TextPanel(_Panel):
                     position=self.editor.position(), clean=self.clean_var.get(),
                     options=self._clean_options())
 
+    # ------------------------------------------------- режим редактирования
+    def _values(self) -> tuple[str, str]:
+        return self.heading_var.get(), self.text.get("1.0", "end-1c")
+
+    def has_input(self) -> bool:
+        h, t = self._values()
+        return bool(h.strip() or t.strip())
+
+    def has_changes(self) -> bool:
+        return self._values() != self._snapshot
+
+    def _set_text(self, value: str, editable: bool) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", value)
+        self.text.edit_modified(False)
+        self.text.configure(state="normal" if editable else "disabled",
+                            background="white" if editable else "#f0f0f0")
+
+    def load_section(self, content) -> None:
+        """Показать содержимое выбранного пункта для правки."""
+        self.heading_entry.configure(state="normal")
+        self.heading_var.set(content.heading)
+        if not content.heading_editable:
+            self.heading_entry.configure(state="disabled")
+        self._set_text(content.body, content.body_editable)
+        self._snapshot = self._values()
+
+    def clear_input(self) -> None:
+        self.heading_entry.configure(state="normal")
+        self.heading_var.set("")
+        self.heading_entry.configure(state="normal" if self._heading_allowed else "disabled")
+        self._set_text("", True)
+        self._snapshot = ("", "")
+
+    def save_edit(self, element) -> str:
+        h, t = self._values()
+        res = self.ctl.update_section(element, h, t, clean=self.clean_var.get(),
+                                      options=self._clean_options())
+        if not res.ok:
+            raise ValueError(res.message)
+        self._snapshot = self._values()
+        return res.message + (" · " + "; ".join(res.warnings) if res.warnings else "")
+
     def refresh_preview(self) -> None:
-        self.editor.preview.show_result(self.ctl.preview_block(self.block, **self._args()))
+        el = self.editor.editing_el
+        if el is not None:
+            h, t = self._values()
+            res = self.ctl.preview_edit(el, h, t, clean=self.clean_var.get(),
+                                        options=self._clean_options())
+        else:
+            res = self.ctl.preview_block(self.block, **self._args())
+        self.editor.preview.show_result(res)
 
     def perform(self) -> str:
         res = self.ctl.insert(self.block, **self._args())
-        self.text.delete("1.0", "end")
-        self.heading_var.set("")
+        self.clear_input()
         msg = f"Добавлено абзацев: {len(res.paragraphs)}"
         return msg + (" · " + "; ".join(res.warnings) if res.warnings else "")
 

@@ -188,7 +188,20 @@ class Button(_Widget):
 
 
 class Entry(_Widget):
-    pass
+    def __init__(self, master=None, **kw):
+        super().__init__(master, **kw)
+        self.value = ""
+
+    def insert(self, index, s):
+        self.value += s
+
+    def delete(self, first, last=None):
+        if str(first).startswith("sel"):
+            raise TclError("no selection")
+        self.value = ""
+
+    def clipboard_get(self):
+        return self._opts.get("clipboard", "")
 
 
 class Checkbutton(_Widget):

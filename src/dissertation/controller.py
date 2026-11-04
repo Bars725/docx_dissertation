@@ -153,6 +153,38 @@ class AppController:
             self.dirty = True
         return legacy
 
+    # ------------------------------------------------ операции со структурой
+    def _ops(self):
+        from .structure_ops import StructureOps
+
+        return StructureOps(self._require())
+
+    def section_content(self, element):
+        return self._ops().read(element)
+
+    def preview_edit(self, element, heading: str, text: str, clean: bool = True,
+                     options: CleanOptions | None = None):
+        return self._ops().preview_update(element, heading, text, clean, options)
+
+    def update_section(self, element, heading: str | None, text: str | None, clean: bool = True,
+                       options: CleanOptions | None = None):
+        res = self._ops().update(element, heading, text, clean, options)
+        self.dirty = self.dirty or res.ok
+        return res
+
+    def move_item(self, element, delta: int):
+        res = self._ops().move(element, delta)
+        self.dirty = self.dirty or res.ok
+        return res
+
+    def describe_item(self, element) -> str:
+        return self._ops().describe(element)
+
+    def delete_item(self, element):
+        res = self._ops().delete(element)
+        self.dirty = self.dirty or res.ok
+        return res
+
     def save(self, path: str | Path | None = None) -> Path:
         saved = self._require().save(path)
         self.dirty = False

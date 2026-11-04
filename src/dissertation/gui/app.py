@@ -16,7 +16,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ..controller import AppController
-from .common import APP_TITLE, IS_WIN, guarded
+from .common import APP_TITLE, IS_WIN, guarded, install_entry_shortcuts
 from .dialogs import DOCX_TYPES, OpenDialog, ProfileDialog, ReportDialog
 from .editor import EditorView
 
@@ -45,6 +45,7 @@ class App:
             style.theme_use("clam")
         style.configure("Big.TButton", font=("Segoe UI", 12), padding=(20, 12))
         self._build_menu()
+        install_entry_shortcuts(self.root)
         self.container = ttk.Frame(self.root)
         self.container.pack(fill="both", expand=True)
         self.editor: EditorView | None = None

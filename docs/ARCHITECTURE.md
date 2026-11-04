@@ -54,6 +54,7 @@
 | `bibliography.py` | `Bibliography`, `BibEntry` | Записи списка литературы с постоянными ключами (закладка `_GostRef_R3` вокруг номера), ссылки `[@R3]` → поля `REF`, сортировка, пересчёт номеров и кэша полей |
 | `toc.py` | `insert_toc`, `refresh_toc` | Оглавление: поле `TOC \o "1-3" \h \z \u` в блоке docPart, кэш пунктов, `updateFields` |
 | `title_page.py` | `TitlePageData`, `set_title_page` | Титульный лист из формы: невидимая таблица с точной высотой строк, значения в закладках `_GostTitle_*` |
+| `structure_ops.py` | `StructureOps` | Содержимое пункта (с восстановлением ссылок `[@R3]`), правка, перемещение среди соседей того же уровня, удаление; защита текста с таблицами/рисунками/списками |
 | `fields.py` | `iter_complex_fields`, закладки | Сложные поля, закладки, флаги `settings.xml` в порядке схемы |
 | `document_builder.py` | `DocumentBuilder`, `BlockType`, `InsertPosition` | Новый/открытый документ, вставка блоков, «умная» позиция, пересчёт номеров, номера страниц, атомарное сохранение |
 | `controller.py` | `AppController` | Склейка всего для GUI/CLI, хранилище профилей `~/.dissertation_docx/profiles` |

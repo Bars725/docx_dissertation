@@ -68,6 +68,49 @@ def install_plain_paste(text: tk.Text, root) -> None:
     text.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
 
+# Коды клавиш Windows (VK): не зависят от раскладки, в отличие от keysym.
+_VK = {86: "paste", 67: "copy", 88: "cut", 65: "select_all"}
+_LATIN = {"v": "paste", "c": "copy", "x": "cut", "a": "select_all"}
+
+
+def _entry_ctrl(event):
+    """Ctrl+V/C/X/A в однострочных полях на любой раскладке.
+
+    На латинице срабатывают штатные привязки Tk (<Control-v> точнее <Control-KeyPress>),
+    поэтому здесь обрабатываем только «нелатинские» нажатия — по коду клавиши.
+    """
+    if event.keysym.lower() in _LATIN:
+        return None
+    action = _VK.get(event.keycode) if IS_WIN else None
+    if action is None:
+        return None
+    w = event.widget
+    if action == "paste":
+        try:
+            data = w.clipboard_get()
+        except tk.TclError:
+            return "break"
+        try:
+            w.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        w.insert("insert", " ".join(data.split("\n")).replace("\r", ""))
+    elif action == "copy":
+        w.event_generate("<<Copy>>")
+    elif action == "cut":
+        w.event_generate("<<Cut>>")
+    else:
+        w.select_range(0, "end")
+        w.icursor("end")
+    return "break"
+
+
+def install_entry_shortcuts(root) -> None:
+    """Для всех ttk.Entry/tk.Entry приложения (включая диалоги)."""
+    for cls in ("TEntry", "Entry"):
+        root.bind_class(cls, "<Control-KeyPress>", _entry_ctrl, add="+")
+
+
 def on_text_change(text: tk.Text, callback) -> None:
     """Вызывать callback при любом изменении содержимого tk.Text."""
     def handler(_event=None):
